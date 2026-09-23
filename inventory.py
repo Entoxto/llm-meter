@@ -9,15 +9,6 @@ import subprocess
 import time
 
 
-def model_labels(paths):
-    """Short, unique names for GGUF selection; values remain exact file paths."""
-    names = [Path(path).name for path in paths]
-    counts = {name.casefold(): sum(other.casefold() == name.casefold() for other in names)
-              for name in names}
-    return {name if counts[name.casefold()] == 1 else f"{name} — {path}": path
-            for name, path in zip(names, paths)}
-
-
 def testable_gguf(row):
     """A CLIP/mmproj sidecar is not a language model for the speed test."""
     return (row.get("architecture") or "").casefold() != "clip" and "mmproj" not in row["name"].casefold()

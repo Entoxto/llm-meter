@@ -4,12 +4,13 @@ import os
 import shutil
 import threading
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 from engine import Client, GIB
 from llama_cpp import LlamaCppClient
 from inventory import (scan_gguf, validate_gguf, local_model_processes,
                        delete_gguf, delete_ollama, ollama_loaded, testable_gguf)
+from model_aliases import alias_for, display_name, set_alias
 
 
 def size(value):
@@ -30,18 +31,17 @@ class ModelsTab(ttk.Frame):
         bar.pack(fill="x")
         ttk.Label(bar, text="Локальные модели", style="Title.TLabel").pack(side="left")
         ttk.Button(bar, text="↻  Обновить", command=self.refresh).pack(side="right")
-        ttk.Label(self, text="Выберите модель в таблице, чтобы открыть её папку, запустить тест или удалить.",
+        ttk.Label(self, text="Выберите модель, чтобы переименовать её для интерфейса, запустить тест или удалить.",
                   style="Muted.TLabel").pack(anchor="w", pady=(2, 8))
         self.total = tk.StringVar(value="Объём моделей: список ещё не получен")
         ttk.Label(self, textvariable=self.total, wraplength=1050).pack(anchor="w", pady=8)
         self.status = tk.StringVar(value="Загружаем модели…")
         ttk.Label(self, textvariable=self.status, wraplength=1050).pack(side="bottom", anchor="w", pady=(6, 0))
         for backend, title, columns in [
-            ("ollama", "Ollama", [("name", "Имя / тег", 340), ("size", "Размер ↓", 100),
+            ("ollama", "Ollama", [("name", "Модель", 340), ("size", "Размер ↓", 100),
                                   ("quant", "Квант", 140), ("modified", "Изменена", 180)]),
-            ("gguf", "llama.cpp / GGUF", [("name", "Файл", 220), ("size", "Размер ↓", 100),
-                ("quant", "Квант", 110), ("architecture", "Архитектура / модель", 240),
-                ("path", "Полный путь", 450)])]:
+            ("gguf", "llama.cpp / GGUF", [("name", "Модель", 300), ("size", "Размер ↓", 100),
+                ("quant", "Квант", 110), ("architecture", "Архитектура", 170)])]:
             line = ttk.Frame(self)
             line.pack(fill="x", pady=(10, 5))
             ttk.Label(line, text=title, style="Section.TLabel").pack(side="left")
@@ -49,6 +49,10 @@ class ModelsTab(ttk.Frame):
                                        command=lambda b=backend: self.prepare_delete(b))
             delete_button.pack(side="right")
             buttons = [delete_button]
+            rename_button = ttk.Button(line, text="Переименовать…", state="disabled",
+                                       command=lambda b=backend: self.rename(b))
+            rename_button.pack(side="right", padx=8)
+            buttons.append(rename_button)
             if backend == "gguf":
                 folder_button = ttk.Button(line, text="Открыть папку", state="disabled", command=self.open_folder)
                 folder_button.pack(side="right", padx=8)
@@ -90,11 +94,58 @@ class ModelsTab(ttk.Frame):
         for button in self.action_buttons[backend]:
             button.configure(state="normal" if row else "disabled")
         if row:
+            name = self.row_name(backend, row)
             if backend == "gguf" and not testable_gguf(row):
                 self.action_buttons[backend][-1].configure(state="disabled")
-                self.status.set(f"{row['name']} — вспомогательный файл для модели. Выберите основной GGUF для теста.")
+                self.status.set(f"{name} — вспомогательный файл для модели. Выберите основной GGUF для теста.")
             else:
-                self.status.set(f"Выбрано: {row['name']} · {size(row.get('size'))}")
+                self.status.set(f"Выбрано: {name} · {size(row.get('size'))}")
+
+    def row_name(self, backend, row):
+        identifier = row["path"] if backend == "gguf" else row["name"]
+        return display_name(self.app.settings, backend, identifier, self.ollama_host)
+
+    def row_values(self, backend, row):
+        name = self.row_name(backend, row)
+        if backend == "ollama":
+            return (name, size(row.get("size")),
+                    (row.get("details") or {}).get("quantization_level") or "—",
+                    (row.get("modified_at") or "—")[:19])
+        return (name, size(row["size"]), row.get("quant") or "—",
+                row.get("architecture") or "—")
+
+    def rename(self, backend):
+        if not self.available() or not (row := self.selected(backend)):
+            return
+        identifier = row["path"] if backend == "gguf" else row["name"]
+        host = self.ollama_host
+        old = alias_for(self.app.settings, backend, identifier, host)
+        value = simpledialog.askstring("Переименовать модель",
+            "Новое имя в LLM Meter. Очистите поле, чтобы вернуть исходное имя.",
+            initialvalue=old or self.row_name(backend, row), parent=self.app.root)
+        if value is None:
+            return
+        value = value.strip()
+        if len(value) > 100 or any(char in value for char in "\r\n\t"):
+            messagebox.showerror("Некорректное имя", "Введите имя до 100 символов в одну строку.",
+                                 parent=self.app.root)
+            return
+        if value and any(other is not row and self.row_name(backend, other).casefold() == value.casefold()
+                         for other in self.rows[backend].values()):
+            messagebox.showerror("Имя уже используется", "Выберите другое имя для этой модели.",
+                                 parent=self.app.root)
+            return
+        set_alias(self.app.settings, backend, identifier, value, host)
+        if not self.app.persist():
+            set_alias(self.app.settings, backend, identifier, old, host)
+            self.status.set("Не удалось сохранить имя модели.")
+            return
+        selection = self.tables[backend].selection()[0]
+        self.tables[backend].item(selection, values=self.row_values(backend, row))
+        self.app.relabel_models()
+        if self.app.last_sample:
+            self.app.show_telemetry(self.app.last_sample)
+        self.status.set(f"Имя сохранено: {self.row_name(backend, row)}")
 
     def available(self):
         if self.app.busy or self.app.inventory_busy or self.loading or self.app.refreshing:
@@ -220,8 +271,8 @@ class ModelsTab(ttk.Frame):
         detail = "\nМодель загружена: сначала она будет выгружена / её управляемый сервер будет остановлен." if loaded else ""
         if backend == "ollama":
             detail += "\nОбщие слои других тегов сохраняются; освобождённое место может быть меньше размера модели."
-        yes = messagebox.askyesno("Удалить модель?", f"{row['name']}\nРазмер: {size(row.get('size'))}"
-            + (f"\n{row['path']}" if backend == "gguf" else f"\nOllama: {host}") + detail
+        yes = messagebox.askyesno("Удалить модель?", f"{self.row_name(backend, row)}\nРазмер: {size(row.get('size'))}"
+            + (f"\nOllama: {host}" if backend == "ollama" else "") + detail
             + "\n\nУдаление необратимо. Продолжить?", parent=self.app.root)
         if not yes:
             self.app.inventory_busy = False
@@ -250,7 +301,7 @@ class ModelsTab(ttk.Frame):
                     if local_model_processes(row["path"]):
                         raise RuntimeError("Модель всё ещё используется. Удаление отменено.")
                     freed = delete_gguf(row, directories, known)
-                self.app.emit("inventory_deleted", (backend, row, freed))
+                self.app.emit("inventory_deleted", (backend, row, freed, host))
             except Exception as exc:
                 self.app.emit("inventory_error", str(exc))
         threading.Thread(target=work, daemon=True).start()
@@ -266,13 +317,7 @@ class ModelsTab(ttk.Frame):
                     button.configure(state="disabled")
                 self.rows[backend] = {}
                 for row in sorted(rows, key=lambda r: r.get("size", 0), reverse=True):
-                    if backend == "ollama":
-                        values = (row["name"], size(row.get("size")),
-                            (row.get("details") or {}).get("quantization_level") or "—", (row.get("modified_at") or "—")[:19])
-                    else:
-                        values = (row["name"], size(row["size"]), row.get("quant") or "—",
-                            " / ".join(filter(None, (row.get("architecture"), row.get("model_name")))) or "—", row["path"])
-                    iid = tree.insert("", "end", values=values)
+                    iid = tree.insert("", "end", values=self.row_values(backend, row))
                     self.rows[backend][iid] = row
                 tree.size_descending = True
             a, b = sum(r.get("size", 0) for r in ollama), sum(r["size"] for r in gguf)
@@ -289,11 +334,14 @@ class ModelsTab(ttk.Frame):
             self.status.set("Ошибка: " + value)
         elif event == "inventory_deleted":
             self.app.inventory_busy = False
-            backend, row, freed = value
+            backend, row, freed, host = value
+            name = self.row_name(backend, row)
+            identifier = row["path"] if backend == "gguf" else row["name"]
+            set_alias(self.app.settings, backend, identifier, "", host)
             if backend == "gguf":
                 self.app.settings["known_files"] = [p for p in self.app.settings.get("known_files", []) if p != row["path"]]
-                self.app.persist()
-            notice = f"Удалена {row['name']} ({size(row.get('size'))}). "
+            self.app.persist()
+            notice = f"Удалена {name} ({size(row.get('size'))}). "
             notice += (f"Свободное место на диске увеличилось на {size(freed)}. Это изменение за время операции."
                        if freed is not None else "Сервер не сообщает фактически освобождённое место.")
             self.refresh()

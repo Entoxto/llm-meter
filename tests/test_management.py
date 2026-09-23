@@ -9,9 +9,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from engine import Cancelled, Client
 from inventory import (gguf_metadata, scan_gguf, delete_gguf, fingerprint,
-                       delete_ollama, load_settings, save_settings, model_labels, testable_gguf)
+                       delete_ollama, load_settings, save_settings, testable_gguf)
 from managed_server import ManagedServer
 from runtime_profiles import has_managed_runtime, runtime_for
+from model_aliases import alias_for, display_name, set_alias, unique_labels
 
 
 def gguf(path):
@@ -26,12 +27,13 @@ def gguf(path):
 
 
 class InventoryTests(unittest.TestCase):
-    def test_gguf_labels_show_filename_and_disambiguate_duplicates(self):
+    def test_gguf_labels_hide_duplicate_paths_but_keep_exact_selection(self):
         paths = [r"C:\models\bonsai.gguf", r"D:\other\bonsai.gguf", r"C:\models\other.gguf"]
-        labels = model_labels(paths)
+        labels = unique_labels((path, display_name({}, "gguf", path)) for path in paths)
         self.assertEqual(set(labels.values()), set(paths))
         self.assertIn("other.gguf", labels)
         self.assertEqual(len(labels), 3)
+        self.assertNotIn("C:\\models", " ".join(labels))
 
     def test_projector_is_not_offered_as_a_language_model(self):
         self.assertFalse(testable_gguf({"name": "vision-mmproj.gguf", "architecture": "clip"}))
@@ -88,6 +90,27 @@ class InventoryTests(unittest.TestCase):
         path = self.root / "settings.json"
         save_settings(path, {"model_dirs": [], "server_exe": "test"})
         self.assertEqual(load_settings(path)["model_dirs"], [])
+
+    def test_aliases_are_persistent_labels_not_model_identifiers(self):
+        model = self.root / "original.gguf"
+        gguf(model)
+        settings = {"model_dirs": [str(self.root)], "server_exe": ""}
+        set_alias(settings, "gguf", model, "Моя модель")
+        set_alias(settings, "ollama", "org/model:latest", "Локальная модель",
+                  "http://127.0.0.1:11434")
+        save_settings(self.root / "settings.json", settings)
+        loaded = load_settings(self.root / "settings.json")
+        labels = unique_labels([(str(model), display_name(loaded, "gguf", model))])
+        self.assertEqual(labels["Моя модель"], str(model))
+        self.assertTrue(model.is_file())
+        self.assertEqual(display_name(loaded, "ollama", "org/model:latest",
+                                      "http://localhost:11434"), "org/model:latest")
+        self.assertEqual(alias_for(loaded, "ollama", "org/model:latest",
+                                   "http://127.0.0.1:11434"), "Локальная модель")
+        self.assertEqual(unique_labels([("one", "Alias"), ("two", "Alias")]),
+                         {"Alias": "one", "Alias (2)": "two"})
+        set_alias(loaded, "gguf", model, "")
+        self.assertEqual(display_name(loaded, "gguf", model), "original.gguf")
 
     def test_local_runtime_registry_survives_older_settings_file(self):
         path = self.root / "settings.json"

@@ -12,9 +12,10 @@ from tkinter import ttk, filedialog, messagebox
 from engine import Client, CONTEXT, GIB, RUNS, TOKENS, Telemetry, placement, run_benchmark, gpu_summary
 from llama_cpp import LlamaCppClient
 from engine import Cancelled
-from inventory import load_settings, save_settings, scan_gguf, model_labels, testable_gguf, gguf_metadata
+from inventory import load_settings, save_settings, scan_gguf, testable_gguf, gguf_metadata
 from managed_server import ManagedServer
 from models_tab import ModelsTab
+from model_aliases import display_name, unique_labels
 from runtime_profiles import has_managed_runtime, runtime_for
 
 ROOT = Path(__file__).resolve().parent
@@ -44,6 +45,7 @@ class App:
         self.settings = load_settings(ROOT / "settings.json")
         self.server = ManagedServer(ROOT / "results")
         self.gguf_paths = []
+        self.available_models = []
         self.model_paths = {}
         self.closing = False
         self.stop = threading.Event()
@@ -330,8 +332,10 @@ class App:
                              context_choice=self.context_choice.get(), custom_context=self.custom_context.get())
         try:
             save_settings(ROOT / "settings.json", self.settings)
+            return True
         except OSError as exc:
             self.status.set("Не удалось сохранить настройки: " + str(exc))
+            return False
 
     def choose_exe(self):
         path = filedialog.askopenfilename(title="Выберите llama-server", filetypes=[("Программа", "*.exe")])
@@ -386,13 +390,24 @@ class App:
 
     def update_local_models(self):
         if self.backend.get() == "llama.cpp" and self.managed.get() and not self.busy:
-            previous = self.model_paths.get(self.model.get())
-            self.model_paths = model_labels(self.gguf_paths)
-            self.models.configure(values=list(self.model_paths), state="readonly")
-            if previous in self.model_paths.values():
-                self.model.set(next(label for label, path in self.model_paths.items() if path == previous))
-            elif self.model.get() not in self.model_paths:
-                self.model.set(next(iter(self.model_paths), ""))
+            self.relabel_models()
+
+    def relabel_models(self):
+        """Refresh visible names while preserving the exact selected model."""
+        previous = self.model_paths.get(self.model.get(), self.model.get())
+        managed = self.backend.get() == "llama.cpp" and self.managed.get()
+        identifiers = self.gguf_paths if managed else self.available_models
+        backend = "gguf" if managed else "ollama" if self.backend.get() == "Ollama" else None
+        entries = [(identifier, display_name(self.settings, backend or "gguf", identifier, self.host.get())
+                    if backend or identifier.lower().endswith(".gguf") else identifier)
+                   for identifier in identifiers]
+        self.model_paths = unique_labels(entries)
+        self.models.configure(values=list(self.model_paths))
+        if previous in self.model_paths.values():
+            self.model.set(next(label for label, identifier in self.model_paths.items()
+                                if identifier == previous))
+        elif not (self.backend.get() == "llama.cpp" and not self.managed.get() and previous):
+            self.model.set(next(iter(self.model_paths), ""))
 
     def update_runtime_note(self):
         if self.backend.get() != "llama.cpp" or not self.managed.get():
@@ -422,6 +437,7 @@ class App:
             self.log_row.pack(fill="x", pady=(8, 0), before=self.controls)
         self.model.set("")
         self.model_paths = {}
+        self.available_models = []
         self.connection_controls()
         self.persist()
         self.refresh()
@@ -465,6 +481,7 @@ class App:
             self.host.set(self.backend_hosts[self.current_backend])
         self.model.set("")
         self.model_paths = {}
+        self.available_models = []
         self.models["values"] = []
         self.models.configure(state="normal" if self.current_backend == "llama.cpp" and not self.managed.get() else "readonly")
         if self.current_backend == "llama.cpp":
@@ -681,7 +698,12 @@ class App:
             gpu_count += int((mem["vram_bytes"] or 0) > 0)
             ram_count += int((mem["ram_estimate_bytes"] or 0) > 0)
             unknown += int(mem["vram_bytes"] is None or mem["ram_estimate_bytes"] is None)
-            self.memory.insert("", "end", values=(model.get("name", "?"),
+            model_name = model.get("name", "?")
+            if self.backend.get() == "Ollama":
+                model_name = display_name(self.settings, "ollama", model_name, self.host.get())
+            elif model_name.lower().endswith(".gguf"):
+                model_name = display_name(self.settings, "gguf", model_name)
+            self.memory.insert("", "end", values=(model_name,
                 gib(mem["vram_bytes"]), gib(mem["ram_estimate_bytes"]),
                 decimal(mem["gpu_percent"], "%"), model.get("context_length") or "—"))
         count = len(value["models"] or [])
@@ -778,9 +800,8 @@ class App:
                             self.gguf_paths = value
                             self.update_local_models()
                         else:
-                            self.models["values"] = value
-                            if self.model.get() not in value:
-                                self.model.set(value[0] if value else "")
+                            self.available_models = value
+                            self.relabel_models()
                         self.start_button.configure(state="normal" if value or (self.backend.get() == "llama.cpp" and not self.managed.get()) else "disabled")
                         self.status.set(f"Найдено моделей: {len(value)}. Выберите модель и начните тест."
                                         if value else ("GGUF не найдены. Добавьте папку на вкладке «Модели» или выберите файл через «Открыть GGUF…»."
