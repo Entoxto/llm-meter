@@ -1,3 +1,3 @@
 @echo off
-start "" "%~dp0Запустить.pyw"
+start "" pyw.exe "%~dp0launch.pyw"
 exit /b
