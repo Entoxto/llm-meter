@@ -29,21 +29,37 @@ QUANTS.update(dict(zip(range(7, 33), ["Q8_0", "Q5_0", "Q5_1", "Q2_K", "Q3_K_S", 
     "Q2_K_S", "IQ3_XS", "IQ3_XXS", "IQ1_S", "IQ4_NL", "IQ3_S", "IQ3_M", "IQ2_S",
     "IQ2_M", "IQ4_XS", "IQ1_M", "BF16"])))
 QUANTS.update({36: "TQ1_0", 37: "TQ2_0", 38: "MXFP4_MOE", 39: "NVFP4", 40: "Q1_0", 41: "Q2_0"})
+# Prism GGUF general.file_type values (distinct from GGML tensor type IDs).
+QUANTS.update({141: "PQ2_0", 143: "PTQ1_0"})
 
 
 def load_settings(path):
+    data = None
     if path.exists():
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return data
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
         except (OSError, ValueError):
             pass
-    bonsai = Path.home() / "Bonsai-demo"
-    executables = [bonsai / "bin/cuda/llama-server.exe", bonsai / "bin/llama-server.exe"]
-    return {"model_dirs": [str(bonsai / "models")] if (bonsai / "models").is_dir() else [],
-            "known_files": [], "server_exe": next((str(p) for p in executables if p.is_file()),
-                                                   shutil.which("llama-server") or "")}
+    if data is None:
+        bonsai = Path.home() / "Bonsai-demo"
+        executables = [bonsai / "bin/cuda/llama-server.exe", bonsai / "bin/llama-server.exe"]
+        data = {"model_dirs": [str(bonsai / "models")] if (bonsai / "models").is_dir() else [],
+                "known_files": [], "server_exe": next((str(p) for p in executables if p.is_file()),
+                                                       shutil.which("llama-server") or "")}
+    # Kept separate so an older, already-open LLM Meter cannot erase new profile
+    # registrations when it saves its in-memory settings on exit.
+    local = path.with_name("runtime_profiles.local.json")
+    if local.exists():
+        try:
+            profiles = json.loads(local.read_text(encoding="utf-8"))
+            for key in ("runtime_profiles", "model_profiles"):
+                if isinstance(profiles.get(key), dict):
+                    data.setdefault(key, {}).update(profiles[key])
+        except (OSError, ValueError, AttributeError):
+            pass
+    return data
 
 
 def save_settings(path, settings):

@@ -11,6 +11,7 @@ from engine import Cancelled, Client
 from inventory import (gguf_metadata, scan_gguf, delete_gguf, fingerprint,
                        delete_ollama, load_settings, save_settings, model_labels, testable_gguf)
 from managed_server import ManagedServer
+from runtime_profiles import has_managed_runtime, runtime_for
 
 
 def gguf(path):
@@ -87,6 +88,16 @@ class InventoryTests(unittest.TestCase):
         path = self.root / "settings.json"
         save_settings(path, {"model_dirs": [], "server_exe": "test"})
         self.assertEqual(load_settings(path)["model_dirs"], [])
+
+    def test_local_runtime_registry_survives_older_settings_file(self):
+        path = self.root / "settings.json"
+        save_settings(path, {"model_dirs": [], "server_exe": "normal.exe"})
+        path.with_name("runtime_profiles.local.json").write_text(json.dumps({
+            "runtime_profiles": {"mtp": {"executable": "mtp.exe"}},
+            "model_profiles": {"C:/models/test.gguf": "mtp"}}), encoding="utf-8")
+        settings = load_settings(path)
+        self.assertEqual(settings["runtime_profiles"]["mtp"]["executable"], "mtp.exe")
+        self.assertEqual(settings["server_exe"], "normal.exe")
 
     def test_ollama_unloads_then_deletes_only_selected_tag(self):
         row = {"name": "test:tag", "digest": "abc", "size": 100}
@@ -192,6 +203,31 @@ class ManagedTests(unittest.TestCase):
             self.assertEqual(launch.call_count, 2)
             self.process.terminate.assert_called_once()
             self.assertTrue(self.server.running)
+
+    def test_model_profile_uses_separate_runtime_and_restarts_when_flags_change(self):
+        custom_exe = self.exe.parent / "mtp-server.exe"
+        custom_exe.touch()
+        profile = {"name": "Prism MTP", "executable": str(custom_exe),
+                   "extra_args": ["-fa", "on", "--spec-type", "draft-mtp", "--spec-draft-n-max", "2"],
+                   "capabilities": ["mtp"]}
+        settings = {"model_profiles": {str(self.model): "prism-mtp"},
+                    "runtime_profiles": {"prism-mtp": profile},
+                    "server_exe": "", "model_dirs": [str(self.model.parent)]}
+        self.assertTrue(has_managed_runtime(settings))
+        self.assertEqual(runtime_for(settings, self.model, self.exe), dict(profile, id="prism-mtp"))
+        self.assertEqual(runtime_for(settings, self.exe.parent / "other.gguf", self.exe)["executable"], self.exe)
+        with patch("managed_server.LlamaCppClient", return_value=self.client), \
+             patch("managed_server.socket.socket"), \
+             patch("managed_server.subprocess.Popen", return_value=self.process) as launch:
+            self.server.ensure(str(self.exe), str(self.model), self.client.host, 65536,
+                               self.stop, lambda *args: None, profile=profile)
+            args = launch.call_args.args[0]
+            self.assertEqual(args[0], str(custom_exe))
+            self.assertIn("draft-mtp", args)
+            self.assertEqual(self.client.required_capabilities, ("mtp",))
+            self.server.ensure(str(self.exe), str(self.model), self.client.host, 65536,
+                               self.stop, lambda *args: None, profile=dict(profile, extra_args=["-fa", "on"]))
+            self.assertEqual(launch.call_count, 2)
 
     def test_actual_context_mismatch_stops_process(self):
         self.client.model_info["context_limit"] = 4096

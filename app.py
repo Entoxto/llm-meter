@@ -15,6 +15,7 @@ from engine import Cancelled
 from inventory import load_settings, save_settings, scan_gguf, model_labels, testable_gguf, gguf_metadata
 from managed_server import ManagedServer
 from models_tab import ModelsTab
+from runtime_profiles import has_managed_runtime, runtime_for
 
 ROOT = Path(__file__).resolve().parent
 BG = "#101722"
@@ -69,8 +70,7 @@ class App:
         root.minsize(min(width, int(960 * self.dpi_scale)), min(height, int(700 * self.dpi_scale)))
         root.after(80, self.pump)
         saved_backend = self.settings.get("last_backend")
-        local_llama = (Path(self.settings.get("server_exe", "")).is_file()
-                       and any(Path(folder).is_dir() for folder in self.settings.get("model_dirs", [])))
+        local_llama = has_managed_runtime(self.settings)
         if saved_backend == "llama.cpp" or (not saved_backend and local_llama):
             self.backend.set("llama.cpp")
             self.change_backend()
@@ -174,6 +174,9 @@ class App:
         ttk.Label(model_box, text="Модель").pack(anchor="w", pady=(0, 5))
         self.models = ttk.Combobox(model_box, textvariable=self.model, state="readonly")
         self.models.pack(fill="x", expand=True)
+        self.runtime_note = tk.StringVar(value="Runtime: обычный llama.cpp")
+        ttk.Label(setup, textvariable=self.runtime_note, style="Muted.TLabel").pack(anchor="w", pady=(0, 6))
+        self.model.trace_add("write", lambda *_: self.update_runtime_note())
         context_box = ttk.Frame(controls)
         context_box.pack(side="left", padx=(14, 0))
         ttk.Label(context_box, text="Контекст").pack(anchor="w", pady=(0, 5))
@@ -198,8 +201,7 @@ class App:
         ttk.Label(actions, text=f"Прогрев + {RUNS} замера по {TOKENS} токенов",
                   style="Muted.TLabel").pack(side="right")
         self.managed_row = ttk.LabelFrame(setup, text="Запуск llama.cpp", padding=8)
-        local_setup = (Path(self.settings.get("server_exe", "")).is_file()
-                       and any(Path(folder).is_dir() for folder in self.settings.get("model_dirs", [])))
+        local_setup = has_managed_runtime(self.settings)
         self.managed = tk.BooleanVar(value=(self.settings.get("managed_llama", local_setup)
                                              if self.settings.get("managed_mode_explicit") else local_setup))
         self.managed_check = ttk.Checkbutton(self.managed_row, text="Запускать сервер автоматически",
@@ -392,6 +394,21 @@ class App:
             elif self.model.get() not in self.model_paths:
                 self.model.set(next(iter(self.model_paths), ""))
 
+    def update_runtime_note(self):
+        if self.backend.get() != "llama.cpp" or not self.managed.get():
+            self.runtime_note.set("")
+            return
+        model = self.model_paths.get(self.model.get())
+        if not model:
+            self.runtime_note.set("Runtime: выберите GGUF")
+            return
+        try:
+            profile = runtime_for(self.settings, model, self.server_exe.get())
+            suffix = "  ·  MTP: будет проверен во время теста" if "mtp" in profile["capabilities"] else ""
+            self.runtime_note.set("Runtime: " + profile["name"] + suffix)
+        except ValueError as exc:
+            self.runtime_note.set(str(exc))
+
     def change_mode(self):
         self.settings["managed_mode_explicit"] = True
         self.models.configure(state="readonly" if self.managed.get() else "normal")
@@ -489,7 +506,9 @@ class App:
         basis = "на диске" if self.backend.get() == "Ollama" else "веса"
         self.model_details.set(f"Квант: {info.get('quantization') or '—'}  ·  Размер: {size} GiB ({basis})  ·  "
                                f"Фактический контекст: {context if context is not None else 'неизвестен'} токенов\n"
-                               f"Работа на GPU: {info.get('offload', '—')}")
+                               f"Работа на GPU: {info.get('offload', '—')}" +
+                               (f"\nRuntime: {info['runtime_profile']}  ·  MTP: {info.get('mtp_status', '—')}"
+                                if info.get("runtime_profile") else ""))
 
     def show_gpu_summary(self, values):
         parts = [f"GPU {v['index']}: средняя {decimal(v['mean_utilization_percent'], '%')} / "
@@ -561,6 +580,9 @@ class App:
             return
         try:
             self.client = self.make_client()
+            model_path = self.model_paths.get(self.model.get(), self.model.get())
+            managed = self.backend.get() == "llama.cpp" and self.managed.get()
+            profile = runtime_for(self.settings, model_path, self.server_exe.get()) if managed else None
         except ValueError as exc:
             self.status.set(str(exc))
             return
@@ -597,7 +619,6 @@ class App:
         self.progress.pack(fill="x", pady=(6, 10), after=self.status_label)
         self.progress.start(12)
         model, executable, host = self.model_paths.get(self.model.get(), self.model.get()), self.server_exe.get(), self.host.get()
-        managed = self.backend.get() == "llama.cpp" and self.managed.get()
         context = self.client.context
         if managed:
             self.settings["managed_host"] = host
@@ -606,7 +627,8 @@ class App:
             try:
                 selected = model
                 if managed:
-                    self.client, selected = self.server.ensure(executable, model, host, context, self.stop, self.emit)
+                    self.client, selected = self.server.ensure(executable, model, host, context, self.stop, self.emit,
+                                                                profile=profile)
                 run_benchmark(self.client, selected, self.emit, self.stop, ROOT / "results")
             except Exception as exc:
                 self.emit("finished", {"status": "cancelled" if isinstance(exc, Cancelled) or self.stop.is_set() else "error",

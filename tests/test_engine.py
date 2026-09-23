@@ -81,6 +81,8 @@ class Fixture:
                                      "prompt_n": 80, "prompt_ms": 500, "cache_n": 20}}]
                     if fixture.mode == "no_timings":
                         events[-1].pop("timings")
+                    if fixture.mode == "mtp":
+                        events[-1]["timings"].update(draft_n=350, draft_n_accepted=225)
                     # Include comments and split one JSON event over multiple SSE data lines.
                     self.wfile.write(b': heartbeat\r\n\r\n')
                     for event in events:
@@ -260,6 +262,17 @@ class EngineTests(unittest.TestCase):
         self.fixture.mode = "no_timings"
         with self.assertRaisesRegex(RuntimeError, "timings"):
             LlamaCppClient(self.fixture.client.host).generate("test", "text", 512, threading.Event())
+
+    def test_mtp_profile_requires_actual_draft_counters(self):
+        client = LlamaCppClient(self.fixture.client.host)
+        client.runtime_profile = "Prism MTP"
+        client.required_capabilities = ("mtp",)
+        with self.assertRaisesRegex(RuntimeError, "MTP не подтверждён"):
+            client.generate("test", "text", 512, threading.Event())
+        self.fixture.mode = "mtp"
+        result = client.generate("test", "text", 512, threading.Event())
+        self.assertEqual((result["draft_n"], result["draft_n_accepted"]), (350, 225))
+        self.assertTrue(client.mtp_verified)
 
     def test_llama_cancel_before_first_sse_token(self):
         self.fixture.client = LlamaCppClient(self.fixture.client.host)

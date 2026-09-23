@@ -47,17 +47,22 @@ class ManagedServer:
         except OSError:
             return ""
 
-    def ensure(self, executable, model, host, context, stop, emit, timeout=120):
+    def ensure(self, executable, model, host, context, stop, emit, timeout=120, profile=None):
+        profile = profile or {"name": "Обычный llama.cpp", "extra_args": [], "capabilities": []}
+        executable = profile.get("executable", executable)
+        extra_args = profile.get("extra_args", [])
+        capabilities = profile.get("capabilities", [])
         executable, model = Path(executable).resolve(), Path(model).resolve()
         if not executable.is_file():
-            raise ValueError("Выберите установленный llama-server.exe.")
+            raise ValueError(f"Runtime «{profile['name']}» не найден: {executable}. "
+                             "Проверьте путь или установите совместимую сборку.")
         if not model.is_file() or model.suffix.lower() != ".gguf":
             raise ValueError("Выберите существующую GGUF-модель.")
         client = LlamaCppClient(host, context=context)
         url = urlsplit(client.host)
         if url.scheme != "http" or url.hostname not in ("127.0.0.1", "localhost") or url.path:
             raise ValueError("Для управляемого сервера нужен адрес http://127.0.0.1:порт (без /v1).")
-        config = (str(executable), str(model), client.host, context)
+        config = (str(executable), str(model), client.host, context, tuple(extra_args), tuple(capabilities))
         if stop.is_set():
             raise Cancelled()
         if self.running and self.config != config:
@@ -74,7 +79,8 @@ class ManagedServer:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             self.log_path = self.output_dir / f"managed-server-{time.time_ns()}.log"
             args = [str(executable), "-m", str(model), "-c", str(context), "-np", "1",
-                    "-ngl", "99", "--host", "127.0.0.1", "--port", str(url.port), "-lv", "4"]
+                    "-ngl", "99", "--host", "127.0.0.1", "--port", str(url.port), "-lv", "4",
+                    *extra_args]
             emit("status", f"Загрузка GGUF · контекст {context:,} · ожидание до {timeout} с…")
             with self.log_path.open("wb") as log:
                 self.process = subprocess.Popen(args, cwd=executable.parent, stdout=log, stderr=log,
@@ -106,6 +112,10 @@ class ManagedServer:
                 if actual != context:
                     raise RuntimeError(f"Сервер выделил context limit {actual}, выбран {context}. "
                                        "Проверьте поддерживаемый размер контекста.")
+                client.runtime_profile = profile.get("name") or "Обычный llama.cpp"
+                client.required_capabilities = tuple(capabilities)
+                client.model_info["runtime_profile"] = client.runtime_profile
+                client.model_info["mtp_status"] = ("ожидает проверки" if "mtp" in capabilities else "выключен")
                 return client, model_id
             raise RuntimeError(f"llama-server не запустился за {timeout} с.")
         except BaseException as exc:

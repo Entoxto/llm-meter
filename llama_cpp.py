@@ -62,6 +62,9 @@ class LlamaCppClient(Client):
         self.log_path = log_path
         self.selected_model = None
         self.metadata_warnings = []
+        self.runtime_profile = None
+        self.required_capabilities = ()
+        self.mtp_verified = False
 
     def list_models(self):
         data = self.request("/v1/models").get("data", [])
@@ -120,6 +123,10 @@ class LlamaCppClient(Client):
             "training_context_limit": meta.get("n_ctx_train"),
             "vram_bytes": None, "ram_estimate_bytes": None, "gpu_percent": None,
             "offload": "API не сообщает; можно подключить лог запуска", "memory_source": "unavailable"}
+        if self.runtime_profile:
+            self.model_info["runtime_profile"] = self.runtime_profile
+            self.model_info["mtp_status"] = ("включён" if self.mtp_verified else "ожидает проверки") if \
+                "mtp" in self.required_capabilities else "выключен"
         if self.log_path:
             try:
                 memory = log_memory(self.log_path, props.get("model_path"))
@@ -190,10 +197,18 @@ class LlamaCppClient(Client):
             total = processed + cached
         output = usage.get("completion_tokens", generated)
         prompt_seconds = seconds(timings.get("prompt_ms"), 1000)
+        drafted = timings.get("draft_n")
+        accepted = timings.get("draft_n_accepted")
+        if "mtp" in self.required_capabilities and tokens >= 512 and not drafted:
+            raise RuntimeError("MTP не подтверждён: llama-server не вернул положительный "
+                               "timings.draft_n. Проверьте совместимость runtime и launch flags.")
+        if drafted and tokens >= 512 and "mtp" in self.required_capabilities:
+            self.mtp_verified = True
         return {"tokens": output, "output_tokens": output, "generation_measured_tokens": generated,
                 "generation_seconds": duration, "tokens_per_second": speed,
                 "prompt_tokens": total, "prompt_processed_tokens": processed, "prompt_cached_tokens": cached,
                 "prompt_seconds": prompt_seconds, "prompt_tokens_per_second": rate(processed, prompt_seconds),
                 "prompt_rate_basis": "uncached", "first_output_seconds": first, "ttft_seconds": first,
                 "load_seconds": None, "wall_seconds": elapsed, "thinking_seen": thinking,
+                "draft_n": drafted, "draft_n_accepted": accepted,
                 "metrics": {"timings": timings, "usage": usage, "system_fingerprint": fingerprint}}

@@ -1,5 +1,6 @@
 # Local settings contain machine-specific model and executable paths.
 settings.json
+runtime_profiles.local.json
 
 # Benchmarks and server logs are generated locally.
 results/
@@ -16,6 +17,10 @@ venv/
 models/
 *.gguf
 *.safetensors
+
+# Downloaded, machine-specific llama.cpp runtimes (keep DLLs with their EXE).
+runtimes/*/
+runtimes/*.zip
 
 # Local secrets.
 .env
