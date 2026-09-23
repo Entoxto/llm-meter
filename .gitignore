@@ -1,0 +1,22 @@
+# Local settings contain machine-specific model and executable paths.
+settings.json
+
+# Benchmarks and server logs are generated locally.
+results/
+*.log
+
+# Python caches and local environments.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Model weights should never be committed to the source repository.
+models/
+*.gguf
+*.safetensors
+
+# Local secrets.
+.env
+.env.*
