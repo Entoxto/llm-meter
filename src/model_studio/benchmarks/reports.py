@@ -76,3 +76,44 @@ def export_result(result: dict, reports_dir: str | Path, format: str = "json") -
         return destination
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def reports_text(results: list[dict], title: str, research: dict | None = None) -> str:
+    """One pasteable report, with scope and every saved result kept explicit."""
+    lines = ["Модельная студия — сводный отчёт", _private(title),
+             f"Снимок на: {datetime.now().astimezone().isoformat(timespec='seconds')}",
+             f"Сохранённых замеров: {len(results)}",
+             "Проанализируй результаты, объясни компромиссы скорости, контекста и памяти. "
+             "Учитывай разные условия тестов, ошибки и неподтверждённые показатели; "
+             "не считай отсутствующие значения нулевыми."]
+    if research is not None:
+        job = _private(research)
+        metadata = {key: job.get(key) for key in (
+            "id", "created_at", "updated_at", "status", "stop_reason", "error", "restore_error")}
+        plan = job.get("plan") or {}
+        metadata["plan"] = {key: plan[key] for key in (
+            "base_config", "contexts", "target_context", "max_configs", "budget_minutes", "runs")
+            if key in plan}
+        lines += ["", "Исследование:", json.dumps(metadata, ensure_ascii=False, indent=2)]
+        expected = {step.get("result_id") for step in job.get("completed_steps", []) if step.get("result_id")}
+        missing = expected - {row.get("id") for row in results}
+        if missing:
+            lines.append(f"Недоступно сохранённых замеров из задания: {len(missing)}.")
+        if job.get("status") == "running":
+            lines.append("Исследование ещё идёт; включены только уже сохранённые замеры.")
+    if not results:
+        lines.append("Сохранённых замеров пока нет; выше приведено состояние задания.")
+    else:
+        lines += ["", "Краткое сравнение:",
+                  "№ | Запрошенный контекст | Фактический контекст | Генерация, ток/с | TTFT, с | Статус"]
+        for index, row in enumerate(results, 1):
+            config, summary = row.get("config") or {}, row.get("summary") or {}
+            def number(value):
+                return f"{value:.3f}".rstrip("0").rstrip(".") if isinstance(value, (int, float)) else "—"
+            values = [config.get("context", row.get("requested_context", row.get("context"))),
+                      (row.get("effective_config") or {}).get("context"),
+                      summary.get("median_tokens_per_second"), summary.get("median_ttft_seconds")]
+            lines.append(f"{index} | " + " | ".join(number(v) for v in values) + " | " + str(row.get("status") or "исторический"))
+        for index, row in enumerate(results, 1):
+            lines += ["", f"{'=' * 20} Замер {index} из {len(results)} {'=' * 20}", report_text(row)]
+    return "\n".join(lines) + "\n"

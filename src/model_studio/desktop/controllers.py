@@ -73,7 +73,7 @@ class Studio(QObject):
             "draft": 2, "reasoning": "auto", "kv_type": "f16", "gpu_layers": 99, "vision": False},
             session=self.core.snapshot, results=[], recommendations=[], telemetry={}, projects=[],
             selectedProject={}, conversations=[], messages=[], research={}, settings={},
-            selectedResult={}, matchingResult={}, researchJobs=[], pendingImages=[], hasMoreResults=False,
+            selectedResult={}, matchingResult={}, researchJobs=[], researchResults=[], pendingImages=[], hasMoreResults=False,
             hasMoreConversations=False, busy=False, notice="", error="", page=0)
         self._pending = {}
         self._session_pending = False
@@ -83,6 +83,7 @@ class Studio(QObject):
         self._closing = False
         self._closed = False
         self._research_cancel = threading.Event()
+        self._history_research_id = None
         self._hash_cancel = threading.Event()
         self._telemetry_pending = False
         self._confirmed_operation = None
@@ -115,6 +116,7 @@ class Studio(QObject):
     selectedResult = _get("selectedResult", "QVariantMap")
     matchingResult = _get("matchingResult", "QVariantMap")
     researchJobs = _get("researchJobs", "QVariantList")
+    researchResults = _get("researchResults", "QVariantList")
     hasMoreResults = _get("hasMoreResults", bool)
     hasMoreConversations = _get("hasMoreConversations", bool)
     busy = _get("busy", bool)
@@ -666,16 +668,17 @@ class Studio(QObject):
             self._values["draft"]["vision"] = True
             self.saveSettings({"model_projectors": associations})
 
-    def _result_view(self, result):
+    def _result_view(self, result, models=None, include_report=True):
+        models = self.models if models is None else models
         result = dict(result)
         summary = result.get("summary") or {}
         config = result.get("config") or {}
-        model = next((m for m in self.models if m["id"] == result.get("model_id")), {})
+        model = next((m for m in models if m["id"] == result.get("model_id")), {})
         if not model and result.get("legacy_source"):
             # A locator is only a display hint, never proof for recommendations.
             from runtime_profiles import model_key
             locator = str(result.get("model") or "")
-            model = next((m for m in self.models if locator and (
+            model = next((m for m in models if locator and (
                 (m.get("backend") == "gguf" and m.get("path") and model_key(m["path"]) == model_key(locator))
                 or (m.get("backend") == "ollama" and result.get("backend") == "ollama"
                     and m.get("tag") == locator and m.get("host") == result.get("host")))), {})
@@ -688,7 +691,8 @@ class Studio(QObject):
             model_vram_gb=round((result.get("memory") or {})["vram_bytes"] / 2**30, 1) if (result.get("memory") or {}).get("vram_bytes") is not None else None)
         try:
             from model_studio.benchmarks.reports import report_text
-            result["report"] = report_text(result)
+            if include_report:
+                result["report"] = report_text(result)
         except ImportError:
             pass
         return result
@@ -744,7 +748,31 @@ class Studio(QObject):
 
     @Slot(str)
     def selectResult(self, result_id):
-        self._update(selectedResult=next((r for r in self.results if r["id"] == result_id), {}))
+        self._update(selectedResult=next((r for r in [*self.researchResults, *self.results] if r["id"] == result_id), {}))
+
+    @Slot(str)
+    def showResearch(self, job_id):
+        job = next((j for j in self.researchJobs if j["id"] == job_id), None)
+        if job is None:
+            self._update(error="Задание исследования не найдено."); return
+        self._history_research_id = job_id
+        self._update(researchResults=[])
+        ids = {s.get("result_id") for s in job.get("completed_steps", [])}
+        model_id = ((job.get("plan") or {}).get("base_config") or {}).get("model_id")
+        def done(rows):
+            if self._history_research_id != job_id:
+                return
+            model = next((m for m in self.models if m["id"] == model_id), None)
+            if model:
+                self._select(model)
+            self._update(researchResults=[self._result_view(r) for r in rows])
+        self._submit("research_results:" + job_id,
+            lambda: [r for r in self.store.results() if r.get("research_id") == job_id or r["id"] in ids], done)
+
+    @Slot()
+    def clearResearchView(self):
+        self._history_research_id = None
+        self._update(researchResults=[])
 
     @Slot(str)
     def applyRecommendation(self, key):
@@ -768,6 +796,41 @@ class Studio(QObject):
         if self.selectedResult:
             from model_studio.benchmarks.reports import report_text
             self.copyText(report_text(self.selectedResult))
+
+    @Slot("QVariantMap")
+    def copyReports(self, filters):
+        """Copy all matching stored rows, independent of UI pagination."""
+        from model_studio.benchmarks.reports import reports_text
+        filters = dict(filters)
+        model, models = dict(self.selectedModel), list(self.models)
+        research_id = str(filters.get("research_id") or "")
+        def work():
+            rows = self.store.results()
+            job = None
+            if research_id:
+                job = next((j for j in self.store.research_jobs() if j["id"] == research_id), None)
+                if job is None:
+                    raise ValueError("Задание исследования не найдено.")
+                result_ids = {step.get("result_id") for step in job.get("completed_steps", [])}
+                rows = [r for r in rows if r.get("research_id") == research_id or r.get("id") in result_ids]
+                rows.sort(key=lambda r: (r.get("created_at", ""), r["id"]))
+                title = "Исследование целиком · " + str(job.get("created_at", research_id))
+            else:
+                rows = [self._result_view(r, models, include_report=False) for r in rows]
+                rows = [r for r in rows if
+                    (not model.get("id") or (r.get("display_model_id") or r.get("model_id")) == model["id"])
+                    and (not filters.get("context") or str(r.get("context")) == str(filters["context"]))
+                    and (not filters.get("status") or r.get("status") == filters["status"])
+                    and (not filters.get("backend") or (r.get("config") or {}).get("backend", r.get("backend")) == filters["backend"])]
+                if not rows:
+                    raise ValueError("Для выбранной модели и фильтров нет сохранённых замеров.")
+                title = "Все отчёты · " + str(model.get("name") or "Все модели")
+                title += " · " + ", ".join(f"{k}: {filters.get(k) or 'все'}" for k in ("context", "status", "backend"))
+            return {"text": reports_text(rows, title, job), "count": len(rows)}
+        def copied(result):
+            QGuiApplication.clipboard().setText(result["text"])
+            self._update(notice=f"Сводный отчёт скопирован. Замеров: {result['count']}.")
+        self._submit("copy_reports", work, copied)
 
     @Slot()
     def exportReport(self):

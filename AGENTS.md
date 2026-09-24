@@ -25,7 +25,7 @@ IMPLEMENTATION.md; не создавайте отсутствующие слои
 | Запуск/выгрузка, контекст, отмена | `configuration.py`, `session.py`, `backends/`, `platform/windows_process.py` | `test_studio_session.py`, `test_studio_end_to_end.py`, `test_management.py` |
 | Каталог, алиасы, runtime-профиль | `catalog.py`; корневые `inventory.py`, `model_aliases.py`, `runtime_profiles.py` | `test_studio_catalog.py`, `test_management.py` |
 | Чат, mmproj, картинки | `chat.py`, `attachments.py`, `backends/images.py`, `desktop/qml/ChatPage.qml` | `test_studio_chat.py`, `test_studio_attachments.py`, `test_studio_vision.py` |
-| Исследование, результаты, рекомендации | `benchmarks/research.py`, `recommendations.py`, `reports.py`; измерительный runner в корневом `engine.py` | `test_studio_research.py`, `test_engine.py`, `test_studio_vision.py` |
+| Исследование, результаты, рекомендации | `benchmarks/research.py`, `recommendations.py`, `reports.py`; измерительный runner в корневом `engine.py` | `test_studio_research.py`, `test_studio_reports.py`, `test_engine.py`, `test_studio_vision.py` |
 | БД, миграции, импорт, backup | `storage/store.py`, `platform/paths.py` | `test_studio_storage.py`, `test_studio_attachments.py` |
 | OpenCode и папка проекта | `integrations/opencode.py`, [docs/OPENCODE.md](docs/OPENCODE.md) | `test_studio_opencode.py` |
 

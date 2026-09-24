@@ -256,6 +256,55 @@ class StudioDesktopTests(unittest.TestCase):
         self.assertEqual(len(list(self.paths["reports"].glob("*.json"))), 1)
         self.assertNotIn("display_model_id", legacy)
 
+    def test_bulk_copy_reads_unloaded_rows_and_respects_model_and_filters(self):
+        model = self._model()
+        first = self.store.save_result({"model_id": model["id"], "status": "completed",
+            "config": {"context": 32768, "backend": "ollama"}})
+        second = self.store.save_result({"model_id": model["id"], "status": "completed",
+            "config": {"context": 32768, "backend": "ollama"}})
+        hidden = self.store.save_result({"model_id": model["id"], "status": "error",
+            "config": {"context": 65536, "backend": "ollama"}})
+        unrelated = self.store.save_result({"status": "completed", "config": {"context": 32768}})
+        self.studio._values["results"] = [first]
+        with patch("model_studio.desktop.controllers.QGuiApplication.clipboard") as clipboard:
+            self.studio.copyReports({"context": "32768", "status": "completed", "backend": "ollama"})
+            self.workers.complete("copy_reports")
+            self.studio._pump()
+        report = clipboard.return_value.setText.call_args.args[0]
+        self.assertIn(first["id"], report)
+        self.assertIn(second["id"], report)
+        self.assertNotIn(hidden["id"], report)
+        self.assertNotIn(unrelated["id"], report)
+        self.assertIn("Замеров: 2", self.studio.notice)
+
+    def test_research_copy_keeps_failures_and_open_does_not_start_session(self):
+        model = self._model()
+        job = self.store.create_research({"base_config": {"model_id": model["id"]}})
+        result = self.store.save_result({"model_id": model["id"], "research_id": job["id"],
+            "status": "error", "error": "GPU memory exhausted", "config": {"context": 131072}})
+        job = self.store.update_research(job["id"], {"status": "stopped", "stop_reason": "fit_failure",
+            "completed_steps": [{"result_id": result["id"]}]})
+        self.studio._values.update(results=[], researchJobs=[job])
+        with patch("model_studio.desktop.controllers.QGuiApplication.clipboard") as clipboard:
+            self.studio.copyReports({"research_id": job["id"], "status": "completed"})
+            self.workers.complete("copy_reports")
+            self.studio._pump()
+        report = clipboard.return_value.setText.call_args.args[0]
+        self.assertIn("GPU memory exhausted", report)
+        self.assertIn("fit_failure", report)
+        self.studio.showResearch(job["id"])
+        self.workers.complete("research_results:" + job["id"])
+        self.studio._pump()
+        self.assertEqual(self.studio.researchResults[0]["id"], result["id"])
+        self.assertEqual(self.core.started, [])
+        self.studio.selectResult(result["id"])
+        self.assertEqual(self.studio.selectedResult["id"], result["id"])
+        self.studio.showResearch(job["id"])
+        self.studio.clearResearchView()
+        self.workers.complete("research_results:" + job["id"])
+        self.studio._pump()
+        self.assertEqual(self.studio.researchResults, [])
+
     def test_device_peak_is_not_confused_with_model_placement(self):
         row = self.studio._result_view({"gpu_peak_bytes": 10 * 2**30,
             "memory": {"vram_bytes": 7 * 2**30}})

@@ -15,8 +15,13 @@ Item {
     property string contextFilter: ""
     property string statusFilter: ""
     property string backendFilter: ""
-    readonly property var filteredResults: (bridge.results || []).filter(function(r) {
-        return (!page.v(bridge.selectedModel,"id","") || page.v(r,"display_model_id",page.v(r,"model_id",""))===page.v(bridge.selectedModel,"id",""))
+    property string researchFilter: ""
+    function showResearch(job) {
+        researchFilter=job.id; contextFilter=""; statusFilter=""; backendFilter=""
+        bridge.showResearch(job.id)
+    }
+    readonly property var filteredResults: (researchFilter ? (bridge.researchResults || []) : (bridge.results || [])).filter(function(r) {
+        return (!!page.researchFilter || !page.v(bridge.selectedModel,"id","") || page.v(r,"display_model_id",page.v(r,"model_id",""))===page.v(bridge.selectedModel,"id",""))
             && (!page.contextFilter || String(page.v(r,"context",""))===page.contextFilter)
             && (!page.statusFilter || page.v(r,"status","")===page.statusFilter)
             && (!page.backendFilter || page.v(page.v(r,"config",{}),"backend",page.v(r,"backend",""))===page.backendFilter)
@@ -31,11 +36,11 @@ Item {
     onFilteredResultsChanged: selectVisibleResult()
     onModeChanged: selectVisibleResult()
     function v(o,k,d) { let x=o && o[k]; return x===undefined || x===null || x==="" ? d : x }
-    function shown(x,s) { return x===undefined || x===null || x==="" ? "Нет данных" : String(x)+(s||"") }
+    function shown(x,s) { if(x===undefined || x===null || x==="") return "Нет данных"; return (typeof x==="number" && Number.isFinite(x) ? x.toLocaleString(Qt.locale("ru_RU"), "f", s===" с" ? 3 : 2) : String(x))+(s||"") }
     function contextLabel(x) { let n=Number(x); return x===undefined || x===null || x==="" ? "Нет данных" : Number.isFinite(n) && n>=1024 ? (n%1024===0 ? n/1024 : Math.round(n/1000))+"K" : String(x) }
     function statusLabel(s) { return ({completed:"Сохранён", running:"Выполняется", cancelled:"Остановлен", stopped:"Прерван", interrupted:"Прерван", error:"Ошибка", failed:"Ошибка"})[s] || String(s || "Нет данных") }
     function jobReason(job) { return job.error || job.restore_error || ({budget_exhausted:"Лимит времени исчерпан", cancelled:"Остановлено пользователем", completed:"План завершён", exhausted:"План завершён", lease_or_storage_error:"Не удалось выполнить задание", configuration_limit:"Достигнут лимит конфигураций", start_failed:"Не удалось запустить модель", fit_failure:"Конфигурация не поместилась в память", measurement_failed:"Замер завершился ошибкой", error:"Ошибка выполнения"})[job.stop_reason] || job.stop_reason || "" }
-    function contextOptions() { let a=[{text:"Все контексты",value:""}], seen={}; for (let r of (bridge.results || [])) { let c=String(v(r,"context","")); if (c && !seen[c]) { seen[c]=true; a.push({text:contextLabel(c),value:c}) } } return a }
+    function contextOptions() { let a=[{text:"Все контексты",value:""}], seen={}; for (let r of (page.researchFilter ? (bridge.researchResults || []) : (bridge.results || []))) { let c=String(v(r,"context","")); if (c && !seen[c]) { seen[c]=true; a.push({text:contextLabel(c),value:c}) } } return a }
     readonly property bool progressing: (bridge.busy && mode==="progress") || ["running","starting","cancelling"].indexOf(v(bridge.research,"status",""))>=0
     Connections { target: bridge; function onChanged() { if (page.mode==="progress" && !bridge.busy) page.mode="history" } }
     ScrollView { anchors.fill: parent; clip: true; ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
@@ -182,16 +187,17 @@ Item {
             }
             RowLayout { visible: page.mode==="history" && !page.progressing; Layout.fillWidth: true; spacing: 12
                 Text { text: "Модель"; color: Theme.text; font.pixelSize: 13 }
-                SearchSelect { Layout.preferredWidth: 320; entries: bridge.models || []; selectedId: page.v(bridge.selectedModel,"id",""); placeholder: "Выберите модель"; iconName: "cube"; onSelected: (id) => bridge.selectModel(id) }
+                SearchSelect { Layout.preferredWidth: 320; entries: (bridge.models || []).filter(function(m) { return m.testable!==false }); selectedId: page.v(bridge.selectedModel,"id",""); placeholder: "Выберите модель"; iconName: "cube"; onSelected: (id) => { page.researchFilter=""; bridge.clearResearchView(); bridge.selectModel(id) } }
+                StudioButton { visible: !!page.researchFilter; text: "Все исследования"; subtle: true; onClicked: { page.researchFilter=""; bridge.clearResearchView() } }
                 Item { Layout.fillWidth: true }
                 Text { text: "Результаты сохраняются автоматически"; color: Theme.muted; font.pixelSize: 12 }
             }
             RowLayout { visible: page.mode==="history" && !page.progressing; Layout.fillWidth: true; spacing: 8
-                ComboBox { Layout.preferredWidth: 176; model: page.contextOptions(); textRole: "text"; valueRole: "value"; onActivated: page.contextFilter=String(currentValue) }
-                ComboBox { Layout.preferredWidth: 152; model: [{text:"Все статусы",value:""},{text:"Сохранён",value:"completed"},{text:"Ошибка",value:"error"},{text:"Остановлен",value:"cancelled"},{text:"Прерван",value:"stopped"}]; textRole: "text"; valueRole: "value"; onActivated: page.statusFilter=String(currentValue) }
-                ComboBox { Layout.preferredWidth: 152; model: ["Все окружения","ollama","llama.cpp"]; onActivated: page.backendFilter=index===0 ? "" : currentText }
+                ComboBox { Layout.preferredWidth: 176; model: page.contextOptions(); textRole: "text"; valueRole: "value"; currentIndex: Math.max(0,model.findIndex(function(x) { return x.value===page.contextFilter })); onActivated: page.contextFilter=String(currentValue) }
+                ComboBox { Layout.preferredWidth: 152; model: [{text:"Все статусы",value:""},{text:"Сохранён",value:"completed"},{text:"Ошибка",value:"error"},{text:"Остановлен",value:"cancelled"},{text:"Прерван",value:"stopped"}]; textRole: "text"; valueRole: "value"; currentIndex: Math.max(0,model.findIndex(function(x) { return x.value===page.statusFilter })); onActivated: page.statusFilter=String(currentValue) }
+                ComboBox { Layout.preferredWidth: 152; model: ["Все окружения","ollama","llama.cpp"]; currentIndex: Math.max(0,model.indexOf(page.backendFilter)); onActivated: page.backendFilter=index===0 ? "" : currentText }
                 Item { Layout.fillWidth: true }
-                Text { text: (bridge.results || []).length + " загружено"; color: Theme.muted; font.pixelSize: 12 }
+                Text { text: (page.researchFilter ? (bridge.researchResults || []) : (bridge.results || [])).length + " загружено"; color: Theme.muted; font.pixelSize: 12 }
             }
             RowLayout { visible: page.mode==="history" && !page.progressing; Layout.fillWidth: true; spacing: 9
                 Repeater { model: ["speed","balanced","context"]
@@ -210,7 +216,7 @@ Item {
             }
             StudioCard { visible: page.mode==="history" && !page.progressing; Layout.fillWidth: true; Layout.preferredHeight: 260
                 ColumnLayout { anchors.fill: parent; anchors.margins: 14; spacing: 9
-                    Text { text: "Все замеры"; color: Theme.text; font.pixelSize: 18; font.bold: true }
+                    Text { text: page.researchFilter ? "Замеры выбранного исследования" : "Все замеры"; color: Theme.text; font.pixelSize: 18; font.bold: true }
                     ListView { Layout.fillWidth: true; Layout.fillHeight: true; clip: true; model: page.filteredResults
                         delegate: Rectangle { required property var modelData; width: ListView.view.width;
                             height: 56; color: page.v(bridge.selectedResult,"id","")===page.v(modelData,"id","") ? "#202648" : "transparent"; border.color: Theme.border
@@ -224,7 +230,7 @@ Item {
                             MouseArea { anchors.fill: parent; onClicked: bridge.selectResult(page.v(modelData,"id","")) }
                         }
                     }
-                    StudioButton { visible: !!bridge.hasMoreResults; text: "Загрузить ещё замеры"; iconName: "chevron-down"; Layout.alignment: Qt.AlignHCenter; onClicked: bridge.loadMoreResults() }
+                    StudioButton { visible: !page.researchFilter && !!bridge.hasMoreResults; text: "Загрузить ещё замеры"; iconName: "chevron-down"; Layout.alignment: Qt.AlignHCenter; onClicked: bridge.loadMoreResults() }
                     Text { text: page.v(bridge.selectedResult,"id","") ? "Выбранный замер: " + page.contextLabel(page.v(bridge.selectedResult,"context",null)) + "  •  " + page.shown(page.v(bridge.selectedResult,"speed",null)," ток/с") + (page.v(bridge.selectedResult,"legacy_source","") ? "  •  Импортированный отчёт" : "") : "Для выбранной модели и фильтров нет сохранённых замеров. Отчёт появится после сохранения результата."; color: Theme.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 12 }
                     RowLayout { visible: !!page.v(bridge.selectedResult,"id",""); Layout.fillWidth: true; spacing: 19
                         Text { text: "Среда: " + page.v(page.v(bridge.selectedResult,"config",{}),"runtime_name","Нет данных"); color: Theme.muted; font.pixelSize: 12 }
@@ -232,8 +238,9 @@ Item {
                         Text { text: "VRAM: " + page.shown(page.v(bridge.selectedResult,"vram_gb",null)," ГБ"); color: Theme.muted; font.pixelSize: 12 }
                     }
                     RowLayout { Layout.fillWidth: true
+                        StudioButton { objectName: "copyAllReportsButton"; text: page.researchFilter ? "Исследование целиком" : "Скопировать все отчёты"; iconName: "copy"; enabled: !!page.researchFilter || !!page.v(bridge.selectedModel,"id",""); onClicked: bridge.copyReports({research_id:page.researchFilter, context:page.contextFilter,status:page.statusFilter,backend:page.backendFilter}) }
                         Item { Layout.fillWidth: true }
-                        StudioButton { objectName: "copyReportButton"; text: "Скопировать отчёт"; iconName: "copy"; enabled: !!page.v(bridge.selectedResult,"id",""); onClicked: bridge.copyReport() }
+                        StudioButton { objectName: "copyReportButton"; text: "Скопировать выбранный"; iconName: "copy"; enabled: !!page.v(bridge.selectedResult,"id",""); onClicked: bridge.copyReport() }
                         StudioButton { objectName: "exportReportButton"; text: "Экспортировать…"; iconName: "download"; enabled: !!page.v(bridge.selectedResult,"id",""); onClicked: bridge.exportReport() }
                     }
                 }
@@ -243,6 +250,7 @@ Item {
                     Text { text: "Задания исследования"; color: Theme.text; font.pixelSize: 18; font.bold: true }
                     ListView { Layout.fillWidth: true; Layout.fillHeight: true; model: bridge.researchJobs || []; clip: true
                         delegate: Rectangle { required property var modelData; width: ListView.view.width; height: 62; color: "transparent"; border.color: Theme.border
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: page.showResearch(modelData) }
                             RowLayout { anchors.fill: parent; anchors.margins: 6
                                 ColumnLayout { Layout.fillWidth: true; spacing: 3
                                     Text { text: page.v(modelData,"created_at",page.v(modelData,"id","Задание")); color: Theme.text; Layout.fillWidth: true; elide: Text.ElideRight }
@@ -253,6 +261,7 @@ Item {
                                     }
                                 }
                                 Text { text: page.statusLabel(page.v(modelData,"status","")); color: Theme.muted; Layout.preferredWidth: 84 }
+                                StudioButton { text: "Скопировать исследование"; iconName: "copy"; buttonHeight: 27; onClicked: bridge.copyReports({research_id:modelData.id}) }
                                 StudioButton { text: "Продолжить"; iconName: "refresh"; buttonHeight: 27; visible: ["cancelled","stopped","interrupted","failed"].indexOf(page.v(modelData,"status",""))>=0; onClicked: { bridge.resumeResearch(page.v(modelData,"id","")); if (bridge.busy) page.mode="progress" } }
                             }
                         }
