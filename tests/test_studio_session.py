@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import base64
+import socket
 from pathlib import Path
 import tempfile
 import threading
@@ -13,9 +14,10 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine import Cancelled
-from model_studio.configuration import LaunchConfig
+from model_studio.configuration import LaunchConfig, effective_context_matches
 from model_studio.domain import SessionBusy, StreamChunk
 from model_studio.session import SessionController
+from model_studio.backends.process import ManagedRuntime
 
 
 class FakeBackend:
@@ -201,6 +203,66 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(lease.snapshot["busy"], "research")
         self.assertEqual(self.session.snapshot["busy"], "idle")
         self.assertEqual(self.session.snapshot["status"], "stopped")
+
+    def test_managed_server_accepts_small_upward_context_adjustment(self):
+        model = Path(self.temp.name) / "selected.gguf"
+        server = Path(self.temp.name) / "llama-server.exe"
+        model.write_bytes(b"gguf")
+        server.write_bytes(b"exe")
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        args_seen = []
+
+        class Process:
+            ended = False
+            def __init__(self, args, cwd, log):
+                args_seen.extend(args)
+            def poll(self):
+                return 0 if self.ended else None
+            def terminate(self):
+                self.ended = True
+            def wait(self, timeout=None):
+                return 0
+            def close(self):
+                pass
+
+        class Backend:
+            def __init__(self, host, context):
+                self.client = self
+                self.host, self.context = host, context
+                self.model_info = {"model_path": str(model), "context_limit": 100096}
+            def request(self, path, timeout=None):
+                return {"modalities": {"vision": False}} if path == "/props" else {}
+            def list_models(self):
+                return [{"name": str(model)}]
+            def prepare(self, model_id):
+                return {}
+
+        config = LaunchConfig(model=str(model), executable=str(server), context=100000,
+                              host=f"http://127.0.0.1:{port}")
+        runtime = ManagedRuntime(Path(self.temp.name) / "logs")
+        with patch("model_studio.backends.process.OwnedProcess", Process), \
+             patch("model_studio.backends.process.LlamaCppBackend", Backend):
+            client, selected = runtime.start(config, threading.Event(), lambda *_: None)
+        self.assertEqual(selected, str(model))
+        self.assertEqual(client.context_rounding_tolerance, 255)
+        self.assertEqual(args_seen[args_seen.index("-c") + 1], "100000")
+        runtime.stop()
+
+    def test_effective_context_rounding_boundaries(self):
+        managed = LaunchConfig(model="C:/a.gguf", executable="C:/server.exe", context=100000)
+        self.assertTrue(effective_context_matches(managed, 100000))
+        self.assertTrue(effective_context_matches(managed, 100096))
+        self.assertTrue(effective_context_matches(managed, 100255))
+        for actual in (99999, 100256, None, True, 100096.0):
+            self.assertFalse(effective_context_matches(managed, actual))
+        external = LaunchConfig(model="C:/a.gguf", managed=False, context=100000)
+        ollama = LaunchConfig(model="tag", backend="ollama", managed=False, context=100000)
+        self.assertFalse(effective_context_matches(external, 100096))
+        self.assertFalse(effective_context_matches(ollama, 100096))
+        self.assertTrue(effective_context_matches(external, 100000))
+        self.assertTrue(effective_context_matches(ollama, 100000))
 
 
 if __name__ == "__main__":

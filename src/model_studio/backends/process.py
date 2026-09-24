@@ -10,7 +10,8 @@ from urllib.parse import urlsplit
 
 from engine import Cancelled
 from model_studio.backends.llama_cpp import LlamaCppBackend
-from model_studio.configuration import LaunchConfig, projector_identity
+from model_studio.configuration import (LaunchConfig, MAX_MANAGED_CONTEXT_ROUNDUP,
+                                        effective_context_matches, projector_identity)
 from model_studio.platform.windows_process import OwnedProcess
 
 
@@ -72,6 +73,7 @@ class ManagedRuntime:
             if Path(projector["path"]) == model:
                 raise ValueError("Vision projector must differ from the model GGUF.")
         client = LlamaCppBackend(config.host, config.context)
+        client.context_rounding_tolerance = MAX_MANAGED_CONTEXT_ROUNDUP
         url = urlsplit(client.host)
         if url.scheme != "http" or url.hostname not in ("127.0.0.1", "localhost") or url.path:
             raise ValueError("Managed server requires http://127.0.0.1:port without a path.")
@@ -121,8 +123,9 @@ class ManagedRuntime:
                 if Path(reported).resolve() != model:
                     raise RuntimeError("Server reported a different model path.")
                 actual_context = client.model_info.get("context_limit")
-                if actual_context != config.context:
-                    raise RuntimeError(f"Server context {actual_context!r} differs from requested {config.context}.")
+                if not effective_context_matches(config, actual_context):
+                    raise RuntimeError(f"Server context {actual_context!r} differs from requested {config.context} "
+                                       "beyond the allowed managed-server upward adjustment.")
                 client.client.runtime_profile = config.runtime_name or executable.name
                 client.client.required_capabilities = ("mtp",) if config.mtp else ()
                 client.projector_identity = projector

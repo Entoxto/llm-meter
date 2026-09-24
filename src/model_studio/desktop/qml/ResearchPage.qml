@@ -19,6 +19,7 @@ Item {
     function shown(x,s) { return x===undefined || x===null || x==="" ? "Нет данных" : String(x)+(s||"") }
     function contextLabel(x) { let n=Number(x); return x===undefined || x===null || x==="" ? "Нет данных" : Number.isFinite(n) && n>=1024 ? (n%1024===0 ? n/1024 : Math.round(n/1000))+"K" : String(x) }
     function statusLabel(s) { return ({completed:"Сохранён", running:"Выполняется", cancelled:"Остановлен", stopped:"Прерван", interrupted:"Прерван", error:"Ошибка", failed:"Ошибка"})[s] || String(s || "Нет данных") }
+    function jobReason(job) { return job.error || job.restore_error || ({budget_exhausted:"Лимит времени исчерпан", cancelled:"Остановлено пользователем", completed:"План завершён", exhausted:"План завершён", lease_or_storage_error:"Не удалось выполнить задание", configuration_limit:"Достигнут лимит конфигураций", start_failed:"Не удалось запустить модель", fit_failure:"Конфигурация не поместилась в память", measurement_failed:"Замер завершился ошибкой", error:"Ошибка выполнения"})[job.stop_reason] || job.stop_reason || "" }
     function contextOptions() { let a=[{text:"Все контексты",value:""}], seen={}; for (let r of (bridge.results || [])) { let c=String(v(r,"context","")); if (c && !seen[c]) { seen[c]=true; a.push({text:contextLabel(c),value:c}) } } return a }
     readonly property bool progressing: (bridge.busy && mode==="progress") || ["running","starting","cancelling"].indexOf(v(bridge.research,"status",""))>=0
     Connections { target: bridge; function onChanged() { if (page.mode==="progress" && !bridge.busy) page.mode="history" } }
@@ -227,11 +228,18 @@ Item {
                 ColumnLayout { anchors.fill: parent; anchors.margins: 14; spacing: 6
                     Text { text: "Задания исследования"; color: Theme.text; font.pixelSize: 18; font.bold: true }
                     ListView { Layout.fillWidth: true; Layout.fillHeight: true; model: bridge.researchJobs || []; clip: true
-                        delegate: Rectangle { required property var modelData; width: ListView.view.width; height: 44; color: "transparent"; border.color: Theme.border
+                        delegate: Rectangle { required property var modelData; width: ListView.view.width; height: 62; color: "transparent"; border.color: Theme.border
                             RowLayout { anchors.fill: parent; anchors.margins: 6
-                                Text { text: page.v(modelData,"created_at",page.v(modelData,"id","Задание")); color: Theme.text; Layout.fillWidth: true; elide: Text.ElideRight }
+                                ColumnLayout { Layout.fillWidth: true; spacing: 3
+                                    Text { text: page.v(modelData,"created_at",page.v(modelData,"id","Задание")); color: Theme.text; Layout.fillWidth: true; elide: Text.ElideRight }
+                                    Text { text: page.jobReason(modelData); color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight
+                                        HoverHandler { id: reasonHover }
+                                        ToolTip.visible: reasonHover.hovered && text.length>0
+                                        ToolTip.text: text
+                                    }
+                                }
                                 Text { text: page.statusLabel(page.v(modelData,"status","")); color: Theme.muted; Layout.preferredWidth: 84 }
-                                StudioButton { text: "Продолжить"; iconName: "refresh"; buttonHeight: 27; visible: ["cancelled","stopped","interrupted"].indexOf(page.v(modelData,"status",""))>=0; onClicked: { bridge.resumeResearch(page.v(modelData,"id","")); if (bridge.busy) page.mode="progress" } }
+                                StudioButton { text: "Продолжить"; iconName: "refresh"; buttonHeight: 27; visible: ["cancelled","stopped","interrupted","failed"].indexOf(page.v(modelData,"status",""))>=0; onClicked: { bridge.resumeResearch(page.v(modelData,"id","")); if (bridge.busy) page.mode="progress" } }
                             }
                         }
                     }

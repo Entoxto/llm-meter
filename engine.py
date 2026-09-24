@@ -382,7 +382,10 @@ def run_benchmark(client, model, emit, stop, output_dir, runs=RUNS, tokens=TOKEN
         actual = loaded.get("context_length")
         report["model_info"] = dict(client.model_info)
         emit("model_info", report["model_info"])
-        if actual != client.context:
+        tolerance = getattr(client, "context_rounding_tolerance", 0)
+        compatible = (type(actual) is int and type(tolerance) is int and
+                      0 <= actual - client.context <= tolerance)
+        if not compatible:
             detail = (f"Перезапустите внешний llama-server с -c {client.context} -np 1 "
                       "или выберите режим «Запускать из LLM Meter»." if client.backend == "llama.cpp"
                       else "Выберите меньший контекст или проверьте настройки Ollama.")

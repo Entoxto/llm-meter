@@ -243,6 +243,16 @@ class EngineTests(unittest.TestCase):
         self.assertNotIn("warmup", report)
         self.assertEqual(report["runs"], [])
 
+    def test_managed_llama_small_upward_context_rounding_is_opt_in(self):
+        self.fixture.context = 100096
+        external = LlamaCppClient(self.fixture.client.host, context=100000)
+        self.assertEqual(self.run_fixture(external)["status"], "error")
+        managed = LlamaCppClient(self.fixture.client.host, context=100000)
+        managed.context_rounding_tolerance = 255
+        report = self.run_fixture(managed)
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["placement_after_warmup"]["context_length"], 100096)
+
     def test_ollama_selected_context_sent_to_every_request(self):
         self.fixture.context = 65536
         client = Client(self.fixture.client.host, context=65536)

@@ -54,3 +54,25 @@ directory, captures an image, and exits. Live model startup and GPU behavior
 must be checked separately on the target computer with its chosen runtime.
 The executable was also smoke-launched with a working directory under Windows
 `%TEMP%`, outside the Python checkout, with `PYTHONPATH` unset.
+
+
+## Application icon and shortcuts
+
+The editable brand mark is `src/model_studio/desktop/icons/model-studio.svg`;
+`model-studio.ico` contains 16, 24, 32, 48, 64, 128 and 256 pixel frames.
+Bootstrap loads the ICO as the Qt window icon and sets the Windows identity
+`ModelStudio.Desktop`; the PyInstaller spec embeds the same icon in the EXE.
+
+After building, create shortcuts with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/create_shortcuts.ps1
+```
+
+The script finds the Windows desktop through SpecialFolder and creates
+`Модельная студия.lnk` there and in the repository root. The shortcuts target
+`dist/ModelStudio/ModelStudio.exe`, use its icon and carry the same
+`System.AppUserModel.ID` as the running application. They contain local paths
+and are not committed. An existing shortcut pointing elsewhere is not overwritten.
+Windows taskbar pinning remains a user action: pin the updated running app;
+if an old pin keeps a cached icon, unpin it and pin the updated shortcut.

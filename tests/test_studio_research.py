@@ -290,6 +290,32 @@ class ResearchTests(unittest.TestCase):
         self.assertFalse(short["comparison_eligible"])
         self.assertIn("Один из прогонов завершился до запрошенной длины ответа", short["blocking_reasons"])
 
+    def test_managed_rounded_context_preserves_measured_evidence(self):
+        model = self.store.upsert_model({"backend": "gguf", "locator": "selected.gguf",
+                                         "digest": "verified-model", "identity_verified": True})
+        config = LaunchConfig(model="selected.gguf", executable="llama-server.exe",
+                              context=100000, model_id=model["id"])
+        measured = {"status": "completed", "requested_runs": 1,
+                    "requested_tokens_per_run": 512,
+                    "placement_after_warmup": {"context_length": 100096},
+                    "model_info": {"context_limit": 100096,
+                                   "context_source": "/props.default_generation_settings.n_ctx"},
+                    "runs": [{"index": 1, "tokens": 512, "generation_seconds": 10,
+                              "tokens_per_second": 51.2}],
+                    "summary": {"median_tokens_per_second": 51.2}}
+        environment = {"backend": "llama.cpp", "runtime_build": "v1", "hardware": "GPU-A",
+                       "driver": "D1", "verified": True}
+        with patch("model_studio.benchmarks.research.environment_snapshot", return_value=environment):
+            result = prepare_result(self.store, config, measured)
+        self.assertTrue(result["comparison_eligible"])
+        self.assertTrue(result["effective_config_verified"])
+        self.assertEqual(result["effective_config"]["context"], 100096)
+        self.assertEqual(result["context_evidence"]["requested"], 100000)
+        cards = recommendations([result], config.to_dict(), current_environment=environment)
+        self.assertTrue(cards[0]["available"])
+        self.assertTrue(cards[0]["exact_current"])
+        self.assertEqual(cards[0]["context"], 100096)
+
     def test_recommendations_require_comparable_proof_and_long_input(self):
         base = {"id": "one", "status": "completed", "model_id": self.config.model_id,
                 "artifact": {"identity_verified": True, "digest": "abc"},

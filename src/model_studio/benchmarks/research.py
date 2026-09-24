@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 from math import isfinite
 
 from engine import PROMPT
-from model_studio.configuration import LaunchConfig, projector_identity
+from model_studio.configuration import LaunchConfig, effective_context_matches, projector_identity
 
 
 _RUN_KEYS = ("index", "tokens", "output_tokens", "generation_seconds",
@@ -266,7 +266,8 @@ def prepare_result(store, config, measured: dict, plan: dict | None = None, clie
         blocking_reasons.append("Измерение не завершено")
     if len(runs) != requested_runs:
         blocking_reasons.append("Выполнены не все запрошенные прогоны")
-    if actual != config.context:
+    context_verified = effective_context_matches(config, actual)
+    if not context_verified:
         blocking_reasons.append("Фактический контекст не подтверждён")
     if not mtp_verified:
         blocking_reasons.append("MTP не подтверждён счётчиками runtime")
@@ -301,7 +302,10 @@ def prepare_result(store, config, measured: dict, plan: dict | None = None, clie
             "session_id": measured.get("session_id"),
             "runtime_model_id": measured.get("runtime_model_id") or config.model,
             "config": config.to_dict(), "effective_config": effective,
-            "effective_config_verified": actual == config.context and mtp_verified,
+            "effective_config_verified": context_verified and mtp_verified,
+            "context_evidence": {"requested": config.context, "effective": actual,
+                                 "verified": context_verified,
+                                 "source": info.get("context_source")},
             "artifact": artifact, "environment": environment,
             "vision_available": vision_available,
             "workload": {"method": method, "signature": signature,

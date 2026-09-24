@@ -15,11 +15,12 @@ _CONFIG_KEYS = ("backend", "model", "context", "host", "executable", "managed",
 
 def _card(key: str, reason: str, row: dict | None = None, current: dict | None = None) -> dict:
     config = row.get("effective_config") or row.get("config") or {} if row else {}
+    requested = row.get("config") or config if row else {}
     actual_context = config.get("context") if isinstance(config, dict) else None
     speed = (row.get("summary") or {}).get("median_tokens_per_second") if row else None
     exact = False
-    if current and row and isinstance(config, dict):
-        exact = all(key in config and config[key] == value for key, value in current.items()
+    if current and row and isinstance(requested, dict):
+        exact = all(key in requested and requested[key] == value for key, value in current.items()
                     if key in _CONFIG_KEYS)
         exact = exact and any(key in current for key in _CONFIG_KEYS)
     return {"key": key, "title": _TITLES[key], "available": row is not None,

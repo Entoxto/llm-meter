@@ -15,6 +15,10 @@ _CONTROLLED = {
     "--mmproj", "--mmproj-url", "--no-mmproj", "--mmproj-auto",
 }
 
+# llama-server may round a requested slot context slightly upward. Only the
+# managed runtime may accept that adjustment; external endpoints stay exact.
+MAX_MANAGED_CONTEXT_ROUNDUP = 255
+
 
 @dataclass(frozen=True)
 class LaunchConfig:
@@ -84,6 +88,14 @@ class LaunchConfig:
     @classmethod
     def from_dict(cls, value: dict) -> "LaunchConfig":
         return cls(**value)
+
+
+def effective_context_matches(config: LaunchConfig, actual: object) -> bool:
+    if type(actual) is not int:
+        return False
+    difference = actual - config.context
+    return difference == 0 or (config.backend == "llama.cpp" and config.managed
+                                and 0 < difference <= MAX_MANAGED_CONTEXT_ROUNDUP)
 
 
 def projector_identity(path: str) -> dict:

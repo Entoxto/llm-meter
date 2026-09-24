@@ -127,6 +127,36 @@ class StudioDesktopTests(unittest.TestCase):
         self.studio._pump()
         self.assertEqual(self.studio.messages[0]["text"], "second message")
 
+    def test_research_failure_exposes_original_and_restore_errors(self):
+        job = {"id": "failed-job", "status": "failed", "error": "context mismatch",
+               "restore_error": "server unavailable", "stop_reason": "error"}
+        self.workers.events.put(("research_finished", job))
+        self.studio._pump()
+        self.assertEqual(self.studio.research["id"], "failed-job")
+        self.assertIn("context mismatch", self.studio.error)
+        self.assertIn("server unavailable", self.studio.error)
+
+    def test_matching_result_uses_requested_settings_with_verified_effective_context(self):
+        model = self._model()
+        model.update(backend="gguf", path="selected.gguf")
+        self.studio._values["settings"]["server_exe"] = "llama-server.exe"
+        self.studio._values["draft"]["context"] = 100000
+        config = self.studio._config().to_dict()
+        environment = {"backend": "llama.cpp", "runtime_build": "v1", "hardware": "gpu",
+                       "driver": "d1", "verified": True}
+        self.studio._environment = environment
+        result = {"id": "rounded", "model_id": model["id"], "config": config,
+                  "effective_config": {**config, "context": config["context"] + 96},
+                  "effective_config_verified": True, "comparison_eligible": True,
+                  "artifact": {"digest": model["digest"]}, "environment": environment,
+                  "status": "completed"}
+        self.studio._values["results"] = [result]
+        self.studio._refresh_recommendations()
+        self.assertEqual(self.studio.matchingResult["id"], "rounded")
+        self.studio._values["draft"]["context"] += 1024
+        self.studio._refresh_recommendations()
+        self.assertEqual(self.studio.matchingResult, {})
+
     def test_draft_change_does_not_rewrite_running_session(self):
         self._model()
         config = self.studio._config().to_dict()

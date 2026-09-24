@@ -7,6 +7,24 @@ from pathlib import Path
 import sys
 
 
+WINDOWS_APP_USER_MODEL_ID = "ModelStudio.Desktop"
+
+
+def _set_windows_app_user_model_id() -> None:
+    if os.name != "nt":
+        return
+    import ctypes
+
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_USER_MODEL_ID)
+
+
+def _app_icon_path() -> Path:
+    if getattr(sys, "frozen", False):
+        bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        return bundle_root / "model_studio" / "desktop" / "icons" / "model-studio.ico"
+    return Path(__file__).resolve().parent / "desktop" / "icons" / "model-studio.ico"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Модельная студия")
     parser.add_argument("--data-dir", type=Path, help="Отдельный каталог данных")
@@ -20,7 +38,7 @@ def main(argv=None):
         parser.error("--demo требует отдельный --data-dir и --capture")
 
     from PySide6.QtCore import QLockFile, QTimer, QUrl
-    from PySide6.QtGui import QFont, QFontDatabase
+    from PySide6.QtGui import QFont, QFontDatabase, QIcon
     from PySide6.QtWidgets import QApplication, QMessageBox
     from PySide6.QtQml import QQmlApplicationEngine
     from PySide6.QtQuickControls2 import QQuickStyle
@@ -28,8 +46,10 @@ def main(argv=None):
     from model_studio.storage import Store
     from model_studio.desktop.controllers import Studio
 
+    _set_windows_app_user_model_id()
     QQuickStyle.setStyle("Fusion")
     app = QApplication([sys.argv[0]])
+    app.setWindowIcon(QIcon(str(_app_icon_path())))
     if args.capture and os.name == "nt":
         for font in ("segoeui.ttf", "segoeuib.ttf", "seguisb.ttf"):
             QFontDatabase.addApplicationFont(str(Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / font))

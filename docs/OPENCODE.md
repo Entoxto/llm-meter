@@ -6,6 +6,18 @@
 
 Для Ollama используется встроенный провайдер `ollama`; для llama.cpp создаётся провайдер `studio-local` с OpenAI-совместимым адресом `/v1`. OpenCode V1 получает временную конфигурацию через `OPENCODE_CONFIG_CONTENT`. Выбор версии выполняется по `opencode --version`.
 
-Проверка установленной OpenCode V2 без отправки запроса модели: при работающей Ollama выполните `MODEL_STUDIO_LIVE_OPENCODE=1 python -m unittest tests.test_studio_opencode -v` (в PowerShell сначала задайте переменную через `$env:MODEL_STUDIO_LIVE_OPENCODE='1'`). Тест поднимает частный сервер и проверяет `/api/model` для обоих режимов провайдера.
+Проверка установленной OpenCode V2 без отправки запроса модели: нужна работающая Ollama и доступный OpenCode. Из корня репозитория в PowerShell:
+
+```powershell
+$previousLive = $env:MODEL_STUDIO_LIVE_OPENCODE
+try {
+    $env:MODEL_STUDIO_LIVE_OPENCODE = '1'
+    .venv\Scripts\python.exe -m unittest discover -s tests -p 'test_studio_opencode.py' -v
+} finally {
+    $env:MODEL_STUDIO_LIVE_OPENCODE = $previousLive
+}
+```
+
+Тест поднимает частный сервер и проверяет `/api/model` для обоих режимов провайдера.
 
 Формат конфигурации и провайдеров следует [документации OpenCode V2](https://opencode.ai/v2/docs/providers) и [описанию расположения конфигурации](https://opencode.ai/v2/docs/config).

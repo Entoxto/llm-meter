@@ -240,8 +240,13 @@ class Studio(QObject):
                 self._values["research"].update(status="running", phase="Восстанавливаем исходную сессию")
             elif event == "research_finished":
                 self._values["research"].update(data)
+                errors = []
+                if data.get("error"):
+                    errors.append("Исследование остановлено: " + str(data["error"]))
                 if data.get("restore_error"):
-                    self._values["error"] = "Не удалось восстановить сессию: " + data["restore_error"]
+                    errors.append("Не удалось восстановить сессию: " + str(data["restore_error"]))
+                if errors:
+                    self._values["error"] = "\n\n".join(errors)
             elif event == "progress":
                 self._values["notice"] = "Измерение: " + str(data.get("completed", 0)) + " / " + str(data.get("total", 0))
         if dirty:
@@ -417,14 +422,14 @@ class Studio(QObject):
             comparable = [r for r in self.results if digest and (r.get("artifact") or {}).get("digest") == digest]
             self._values["recommendations"] = recommendations(comparable, config, current_environment=self._environment)
             for result in comparable:
-                effective = result.get("effective_config") or {}
+                requested = result.get("config") or result.get("effective_config") or {}
                 environment = result.get("environment") or {}
                 if (result.get("model_id") == config.get("model_id") and result.get("effective_config_verified")
                     and result.get("comparison_eligible") and self._environment and self._environment.get("verified")
                     and all(environment.get(k) == self._environment.get(k) for k in ("backend", "runtime_build", "hardware", "driver"))
                     and (not config.get("mmproj") or (self._environment.get("projector_verified") and
                          (result.get("artifact", {}).get("projector") or {}).get("digest") == self._environment.get("projector_digest")))
-                    and all(effective.get(k) == v for k, v in config.items())
+                    and all(requested.get(k) == v for k, v in config.items())
                     and result.get("status") == "completed"):
                     self._values["matchingResult"] = result
                     break

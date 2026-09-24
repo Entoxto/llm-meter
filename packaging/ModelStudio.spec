@@ -24,6 +24,7 @@ analysis = Analysis(
     noarchive=False,
     optimize=0,
 )
+APP_ICON = ROOT / "src" / "model_studio" / "desktop" / "icons" / "model-studio.ico"
 pyz = PYZ(analysis.pure)
 exe = EXE(
     pyz,
@@ -31,6 +32,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="ModelStudio",
+    icon=str(APP_ICON),
     debug=False,
     strip=False,
     upx=False,

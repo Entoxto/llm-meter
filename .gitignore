@@ -32,3 +32,10 @@ runtimes/*.zip
 *.egg-info/
 build/
 dist/
+/Модельная студия.lnk
+
+# Portable user backups and SQLite files are not source artifacts.
+*.studio-backup
+*.db
+*.db-wal
+*.db-shm

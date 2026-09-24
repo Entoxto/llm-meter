@@ -23,4 +23,4 @@ model_studio = "src/model_studio"
 where = ["src"]
 
 [tool.setuptools.package-data]
-model_studio = ["desktop/qml/*.qml", "desktop/qml/qmldir", "desktop/qml/components/*.qml", "desktop/qml/pages/*.qml", "desktop/qml/icons/*.svg", "desktop/qml/icons/LICENSE", "storage/migrations/*.sql"]
+model_studio = ["desktop/icons/*.svg", "desktop/icons/*.ico", "desktop/qml/*.qml", "desktop/qml/qmldir", "desktop/qml/components/*.qml", "desktop/qml/pages/*.qml", "desktop/qml/icons/*.svg", "desktop/qml/icons/LICENSE", "storage/migrations/*.sql"]

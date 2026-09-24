@@ -31,6 +31,7 @@ def report_text(result: dict) -> str:
              f"Статус: {row.get('status', '—')}"]
     sections = (("Модель и артефакт", "artifact"), ("Конфигурация", "config"),
                 ("Применённая конфигурация", "effective_config"),
+                ("Подтверждение контекста", "context_evidence"),
                 ("Среда", "environment"), ("Методика", "workload"),
                 ("Длинный контекст", "long_context"), ("Память", "memory"),
                 ("Метаданные модели и источник памяти", "model_info"),
