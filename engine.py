@@ -212,8 +212,12 @@ class Client:
 
     def generate(self, model, prompt, tokens, stop):
         payload = {"model": model, "prompt": prompt, "stream": True,
-                   "keep_alive": "2m", "options": {"num_ctx": self.context,
+                   "keep_alive": getattr(self, "keep_alive", "2m"), "options": {"num_ctx": self.context,
                    "num_predict": tokens, "temperature": 0, "seed": 42}}
+        if getattr(self, "reasoning", "auto") != "auto":
+            payload["think"] = self.reasoning == "on"
+        if getattr(self, "no_truncate", False):
+            payload["truncate"] = False
         first_output = None
         thinking_seen = False
         stream = self.stream("/api/generate", payload, stop)
@@ -450,14 +454,15 @@ def run_benchmark(client, model, emit, stop, output_dir, runs=RUNS, tokens=TOKEN
         report["measured_gpu_summary"] = gpu_summary([
             s for s in report["samples"] if any(r["started_monotonic"] <= s.get("monotonic", 0)
             <= r["ended_monotonic"] for r in report["runs"])])
-    try:
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        filename = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json"
-        path = output_dir / filename
-        path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        report["saved_to"] = str(path.resolve())
-    except OSError as exc:
-        report["warnings"].append(f"Не удалось сохранить отчёт: {exc}")
+    if output_dir is not None:
+        try:
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            filename = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json"
+            path = output_dir / filename
+            path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            report["saved_to"] = str(path.resolve())
+        except OSError as exc:
+            report["warnings"].append(f"Не удалось сохранить отчёт: {exc}")
     emit("finished", report)
     return report

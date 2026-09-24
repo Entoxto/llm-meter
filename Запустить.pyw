@@ -4,4 +4,4 @@ import runpy
 
 
 if __name__ == "__main__":
-    runpy.run_path(str(Path(__file__).with_name("launch.pyw")), run_name="__main__")
+    runpy.run_path(str(Path(__file__).with_name("Студия.pyw")), run_name="__main__")

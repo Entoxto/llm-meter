@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "model-studio"
+version = "0.1.0"
+description = "Local model sessions, chat and measured launch configurations"
+requires-python = ">=3.11"
+dependencies = ["PySide6==6.11.2"]
+
+[project.gui-scripts]
+model-studio = "model_studio.bootstrap:main"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["engine", "llama_cpp", "inventory", "managed_server", "runtime_profiles", "model_aliases"]
+
+[tool.setuptools.package-dir]
+model_studio = "src/model_studio"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+model_studio = ["desktop/qml/*.qml", "desktop/qml/qmldir", "desktop/qml/components/*.qml", "desktop/qml/pages/*.qml", "desktop/qml/icons/*.svg", "desktop/qml/icons/LICENSE", "storage/migrations/*.sql"]

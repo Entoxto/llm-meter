@@ -1,0 +1,6 @@
+singleton Theme 1.0 Theme.qml
+StudioButton 1.0 StudioButton.qml
+StudioCard 1.0 StudioCard.qml
+StudioField 1.0 StudioField.qml
+StudioIcon 1.0 StudioIcon.qml
+SearchSelect 1.0 SearchSelect.qml

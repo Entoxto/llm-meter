@@ -25,3 +25,10 @@ runtimes/*.zip
 # Local secrets.
 .env
 .env.*
+
+# Desktop build and isolated QA data.
+.test-data/
+.test-artifacts/
+*.egg-info/
+build/
+dist/
