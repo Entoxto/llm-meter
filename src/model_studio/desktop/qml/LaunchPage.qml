@@ -17,7 +17,7 @@ Item {
     }
     property int customContext: 100000
     function v(o,k,d) { let x=o && o[k]; return x===undefined || x===null || x==="" ? d : x }
-    function shown(x,s) { return x===undefined || x===null || x==="" ? "—" : String(x)+(s||"") }
+    function shown(x,s) { return x===undefined || x===null || x==="" ? "—" : (typeof x==="number" && Number.isFinite(x) ? x.toLocaleString(Qt.locale("ru_RU"), "f", s===" с" ? 3 : 2) : String(x))+(s||"") }
     function contextLabel(x) { let n=Number(x); return x===undefined || x===null || x==="" ? "—" : Number.isFinite(n) && n>=1024 ? (n%1024===0 ? n/1024 : Math.round(n/1000))+"K" : String(x) }
     function supports(cap) { return (v(bridge.selectedModel,"capabilities",[]) || []).indexOf(cap)>=0 }
     function startable() { return !!v(bridge.selectedModel,"id","") && !!v(bridge.selectedModel,"available",false) && v(bridge.selectedModel,"testable",true) }
@@ -74,7 +74,11 @@ Item {
                                     Column { spacing: 5; Text { text: "Контекст"; color: Theme.muted; font.pixelSize: 12 } Text { text: page.contextLabel(rec && rec.available ? rec.context : null); color: Theme.text; font.pixelSize: 22; font.bold: true } }
                                     Column { spacing: 5; Text { text: "Скорость генерации"; color: Theme.muted; font.pixelSize: 12 } Text { text: page.shown(rec && rec.available ? rec.speed : null," ток/с"); color: Theme.text; font.pixelSize: 22; font.bold: true } }
                                 }
-                                Text { text: rec && rec.available ? "По сохранённым тестам" : "Эта модель ещё не исследована"; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width }
+                                Text { text: rec && rec.available ? "По сохранённым тестам" : page.v(rec,"reason","Выберите модель и дождитесь проверки результатов."); color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width; maximumLineCount: 2; elide: Text.ElideRight
+                                    HoverHandler { id: recommendationReasonHover }
+                                    ToolTip.visible: recommendationReasonHover.hovered && truncated
+                                    ToolTip.text: text
+                                }
                             }
                             MouseArea { anchors.fill: parent; enabled: !!rec && !!rec.available; onClicked: { page.selectedMode=modelData; bridge.applyRecommendation(modelData) } }
                         }

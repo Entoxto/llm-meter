@@ -55,6 +55,22 @@ must be checked separately on the target computer with its chosen runtime.
 The executable was also smoke-launched with a working directory under Windows
 `%TEMP%`, outside the Python checkout, with `PYTHONPATH` unset.
 
+## Launching from an MSIX development host
+
+Use `powershell -NoProfile -ExecutionPolicy Bypass -File tools/start_windows.ps1`
+to open the installed app through Explorer and the normal application shortcut.
+Starting the EXE directly as a child of an MSIX host can inherit AppData
+virtualization. In Codex this produced a separate stale database under
+`Packages/OpenAI.Codex_*/LocalCache/Local/ModelStudio` while displaying the usual
+`%LOCALAPPDATA%/ModelStudio` path. The normal desktop launch retained the user's
+completed research. Never replace the desktop database with that stale copy.
+For diagnosis, `GetFinalPathNameByHandleW` reveals the actual opened path;
+a read-only SQLite snapshot taken by a helper launched through Explorer can
+be inspected from the development workspace without changing the original.
+
+Explicit `--data-dir` directories inside the workspace remain appropriate for
+isolated build smoke tests.
+
 
 ## Application icon and shortcuts
 
