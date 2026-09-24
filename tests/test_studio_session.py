@@ -240,7 +240,8 @@ class SessionTests(unittest.TestCase):
                 return {}
 
         config = LaunchConfig(model=str(model), executable=str(server), context=100000,
-                              host=f"http://127.0.0.1:{port}")
+                              host=f"http://127.0.0.1:{port}", reasoning="off", kv_type="q8_0",
+                              capabilities=("reasoning", "kv-cache"))
         runtime = ManagedRuntime(Path(self.temp.name) / "logs")
         with patch("model_studio.backends.process.OwnedProcess", Process), \
              patch("model_studio.backends.process.LlamaCppBackend", Backend):
@@ -248,6 +249,9 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(selected, str(model))
         self.assertEqual(client.context_rounding_tolerance, 255)
         self.assertEqual(args_seen[args_seen.index("-c") + 1], "100000")
+        self.assertEqual(args_seen[args_seen.index("--reasoning") + 1], "off")
+        self.assertEqual(args_seen[args_seen.index("--cache-type-k") + 1], "q8_0")
+        self.assertEqual(args_seen[args_seen.index("--cache-type-v") + 1], "q8_0")
         runtime.stop()
 
     def test_effective_context_rounding_boundaries(self):

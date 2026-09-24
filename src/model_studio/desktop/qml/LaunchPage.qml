@@ -98,14 +98,19 @@ Item {
                     }
                     RowLayout { visible: page.v(bridge.selectedModel,"backend","")==="gguf"; Layout.fillWidth: true; spacing: 12
                         Text { text: "Изображения"; color: Theme.text; font.pixelSize: 14; Layout.preferredWidth: 136 }
-                        Switch { checked: !!page.v(bridge.draft,"vision",false); enabled: !!page.v(bridge.selectedModel,"mmproj_available",false); onToggled: bridge.setDraft("vision",checked) }
+                        Switch { objectName: "visionSwitch"; checked: !!page.v(bridge.draft,"vision",false); enabled: page.startable(); onToggled: {
+                            if (checked && !page.v(bridge.selectedModel,"mmproj_available",false)) {
+                                bridge.chooseProjector()
+                                checked=Qt.binding(function() { return !!page.v(bridge.draft,"vision",false) })
+                            } else bridge.setDraft("vision",checked)
+                        } }
                         Text { text: page.v(bridge.selectedModel,"mmproj_available",false) ? (page.v(bridge.draft,"vision",false) ? "mmproj будет подключён" : "Только текст") : "Нужен совместимый mmproj"; color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true }
                         StudioButton { text: page.v(bridge.selectedModel,"mmproj_path","") ? "Изменить…" : "Выбрать…"; iconName: "folder"; onClicked: bridge.chooseProjector() }
                     }
                     RowLayout { Layout.fillWidth: true; spacing: 16
                         Text { text: "Рассуждение"; color: Theme.text; font.pixelSize: 14; Layout.preferredWidth: 136 }
-                        ComboBox { model: ["Авто","Вкл","Выкл"]; currentIndex: Math.max(0,["auto","on","off"].indexOf(page.v(bridge.draft,"reasoning","auto"))); enabled: page.supports("reasoning"); onActivated: bridge.setDraft("reasoning",["auto","on","off"][index]); Layout.preferredWidth: 176 }
-                        Text { text: page.supports("reasoning") ? "Проверено runtime" : "Не подтверждено для этой модели/runtime"; color: Theme.muted; font.pixelSize: 12 }
+                        ComboBox { objectName: "reasoningSelect"; model: ["Авто","Вкл","Выкл"]; currentIndex: Math.max(0,["auto","on","off"].indexOf(page.v(bridge.draft,"reasoning","auto"))); enabled: page.supports("reasoning"); onActivated: bridge.setDraft("reasoning",["auto","on","off"][index]); Layout.preferredWidth: 176 }
+                        Text { text: page.supports("reasoning") ? "Поддерживается сервером" : "Переключение не подтверждено сервером"; color: Theme.muted; font.pixelSize: 12 }
                     }
                     RowLayout { Layout.fillWidth: true; spacing: 16
                         Text { text: "Ускорение MTP"; color: Theme.text; font.pixelSize: 14; Layout.preferredWidth: 136 }
@@ -122,7 +127,7 @@ Item {
                         StudioButton { text: advanced.visible ? "Свернуть" : "Развернуть"; iconName: "chevron-down"; subtle: true; onClicked: advanced.visible=!advanced.visible }
                     }
                     ColumnLayout { id: advanced; visible: false; Layout.fillWidth: true; spacing: 10
-                        RowLayout { Text { text: "Память контекста"; color: Theme.text; Layout.preferredWidth: 144 } ComboBox { model: page.supports("kv-cache") ? ["f16","q8_0","q4_0"] : ["f16"]; currentIndex: Math.max(0,model.indexOf(page.v(bridge.draft,"kv_type","f16"))); onActivated: bridge.setDraft("kv_type",currentText) } Text { text: page.supports("kv-cache") ? "Доступны проверенные варианты" : "Экономный KV не подтверждён"; color: Theme.muted } }
+                        RowLayout { Text { text: "Память контекста"; color: Theme.text; Layout.preferredWidth: 144 } ComboBox { objectName: "kvCacheSelect"; model: page.supports("kv-cache") ? ["f16","q8_0","q4_0"] : ["f16"]; currentIndex: Math.max(0,model.indexOf(page.v(bridge.draft,"kv_type","f16"))); onActivated: bridge.setDraft("kv_type",currentText) } Text { text: page.supports("kv-cache") ? "Поддерживается сервером" : "Экономный KV не подтверждён"; color: Theme.muted } }
                         RowLayout { Text { text: "Слои на GPU"; color: Theme.text; Layout.preferredWidth: 144 } SpinBox { from: 0; to: 999; value: Number(page.v(bridge.draft,"gpu_layers",0)); onValueModified: bridge.setDraft("gpu_layers",value) } }
                     }
                 }

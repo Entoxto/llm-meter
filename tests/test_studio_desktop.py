@@ -127,6 +127,42 @@ class StudioDesktopTests(unittest.TestCase):
         self.studio._pump()
         self.assertEqual(self.studio.messages[0]["text"], "second message")
 
+    def test_discovered_options_enable_launch_without_losing_saved_evidence(self):
+        model = {"id": "gguf", "backend": "gguf", "path": str(self.root / "model.gguf"),
+                 "name": "model", "available": True, "identity_verified": True, "digest": "abc"}
+        exe = str(self.root / "server.exe")
+        self.studio._values.update(models=[model], selectedModel=model,
+            settings={"server_exe": exe}, runtimeCapabilities={exe: ["reasoning", "kv-cache"]})
+        with patch.object(self.studio, "_capture_environment"):
+            self.studio._select(model)
+        self.assertIn("reasoning", self.studio.selectedModel["capabilities"])
+        self.studio.setDraft("reasoning", "off")
+        self.studio.setDraft("kv_type", "q8_0")
+        config = self.studio._config()
+        self.assertEqual((config.reasoning, config.kv_type), ("off", "q8_0"))
+        env = {"verified": True, "backend": "llama.cpp", "runtime_build": "build", "hardware": "gpu", "driver": "driver"}
+        self.studio._environment = env
+        self.studio._values["results"] = [{"id": "saved", "model_id": "gguf", "status": "completed",
+            "config": {**config.to_dict(), "capabilities": [], "runtime_name": "old name"},
+            "artifact": {"digest": "abc"}, "environment": env,
+            "effective_config_verified": True, "comparison_eligible": True}]
+        self.studio._refresh_recommendations()
+        self.assertEqual(self.studio.matchingResult["id"], "saved")
+
+    def test_projector_picker_offers_discovered_module_and_cancel_does_not_enable(self):
+        model = {"id": "gguf", "backend": "gguf", "path": str(self.root / "model.gguf"), "available": True}
+        projector = {"backend": "gguf", "path": str(self.root / "vision-mmproj.gguf"), "available": True, "testable": False}
+        self.studio._values.update(selectedModel=model, models=[model, projector])
+        with patch("model_studio.desktop.controllers.QFileDialog.getOpenFileName", return_value=("", "")) as picker:
+            self.studio.chooseProjector()
+            self.assertEqual(picker.call_args.args[2], projector["path"])
+            self.assertFalse(self.studio.draft["vision"])
+        with patch("model_studio.desktop.controllers.QFileDialog.getOpenFileName", return_value=(projector["path"], "")):
+            self.studio.chooseProjector()
+        self.assertTrue(self.studio.draft["vision"])
+        self.workers.complete("settings")
+        self.assertEqual(self.store.settings()["model_projectors"][model["path"]], projector["path"])
+
     def test_research_failure_exposes_original_and_restore_errors(self):
         job = {"id": "failed-job", "status": "failed", "error": "context mismatch",
                "restore_error": "server unavailable", "stop_reason": "error"}

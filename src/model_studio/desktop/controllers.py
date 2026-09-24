@@ -295,9 +295,21 @@ class Studio(QObject):
         settings["reports_dir"] = str(self.paths["reports"])
         conversations, results = self.store.conversations(limit=200), self.store.results(limit=200)
         models = self.catalog.scan(settings)
+        from runtime_profiles import runtime_for
+        from model_studio.backends.capabilities import runtime_capabilities
+        detected = {}
+        for model in models:
+            if model.get("backend") != "gguf" or not model.get("available") or not model.get("testable", True):
+                continue
+            try:
+                executable = runtime_for(settings, model.get("path", ""), settings.get("server_exe", ""))["executable"]
+                if executable and executable not in detected:
+                    detected[executable] = runtime_capabilities(executable)
+            except ValueError:
+                continue  # Selection exposes invalid profile settings to the user.
         settings["ollama_available"] = self.catalog.connections.get("ollama")
         settings["llama_available"] = bool(settings.get("server_exe") and Path(settings["server_exe"]).is_file())
-        return {"settings": settings, "models": models, "projects": self.store.projects(),
+        return {"settings": settings, "models": models, "runtimeCapabilities": detected, "projects": self.store.projects(),
                 "conversations": conversations, "results": results, "researchJobs": self.store.research_jobs(),
                 "hasMoreResults": len(results) == 200, "hasMoreConversations": len(conversations) == 200}
 
@@ -328,7 +340,12 @@ class Studio(QObject):
 
     def _profile(self, model):
         from runtime_profiles import runtime_for
-        return runtime_for(self.settings, model.get("path", ""), self.settings.get("server_exe", "")) if model.get("backend") == "gguf" else {}
+        if model.get("backend") != "gguf":
+            return {}
+        profile = runtime_for(self.settings, model.get("path", ""), self.settings.get("server_exe", ""))
+        detected = self._values.get("runtimeCapabilities", {}).get(profile["executable"], [])
+        profile["capabilities"] = list(dict.fromkeys([*profile.get("capabilities", []), *detected]))
+        return profile
 
     def _select(self, model):
         changed = self.selectedModel.get("id") != model.get("id")
@@ -342,6 +359,7 @@ class Studio(QObject):
             model.update(mmproj_path=projector, mmproj_available=bool(projector and Path(projector).is_file()))
         if changed:
             self._values["draft"]["vision"] = False
+            self._values["draft"].update(reasoning="auto", kv_type="f16")
         if model:
             try:
                 profile = self._profile(model)
@@ -431,7 +449,7 @@ class Studio(QObject):
                     and all(environment.get(k) == self._environment.get(k) for k in ("backend", "runtime_build", "hardware", "driver"))
                     and (not config.get("mmproj") or (self._environment.get("projector_verified") and
                          (result.get("artifact", {}).get("projector") or {}).get("digest") == self._environment.get("projector_digest")))
-                    and all(requested.get(k) == v for k, v in config.items())
+                    and all(requested.get(k) == v for k, v in config.items() if k not in ("capabilities", "runtime_name"))
                     and result.get("status") == "completed"):
                     self._values["matchingResult"] = result
                     break
@@ -660,8 +678,11 @@ class Studio(QObject):
         model = dict(self.selectedModel)
         if model.get("backend") != "gguf" or not model.get("testable", True):
             return
+        candidates = [m for m in self.models if m.get("backend") == "gguf"
+                      and m.get("available") and m.get("testable") is False]
+        initial = model.get("mmproj_path") or (candidates[0].get("path") if len(candidates) == 1 else "")
         path, _ = QFileDialog.getOpenFileName(None, "Модуль изображений mmproj для выбранной модели",
-            str(Path(model["path"]).parent), "Модули GGUF (*.gguf)")
+            initial or str(Path(model["path"]).parent), "Модули GGUF (*.gguf)")
         if path:
             associations = dict(self.settings.get("model_projectors", {}))
             associations[model["path"]] = path
