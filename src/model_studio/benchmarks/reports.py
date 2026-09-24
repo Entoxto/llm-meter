@@ -29,6 +29,12 @@ def report_text(result: dict) -> str:
     lines = ["Модельная студия — результат измерения",
              f"ID: {row.get('id', '—')}", f"Дата: {row.get('created_at', '—')}",
              f"Статус: {row.get('status', '—')}"]
+    if row.get("legacy_source"):
+        legacy = {key: row[key] for key in ("model", "backend", "runtime", "context",
+                  "requested_context", "requested_runs", "requested_tokens_per_run", "output_limit")
+                  if row.get(key) is not None}
+        lines += ["", "Параметры импортированного теста:",
+                  json.dumps(legacy, ensure_ascii=False, indent=2, default=str)]
     sections = (("Модель и артефакт", "artifact"), ("Конфигурация", "config"),
                 ("Применённая конфигурация", "effective_config"),
                 ("Подтверждение контекста", "context_evidence"),
@@ -37,7 +43,8 @@ def report_text(result: dict) -> str:
                 ("Метаданные модели и источник памяти", "model_info"),
                 ("Пик GPU во время замеров", "measured_gpu_summary"),
                 ("GPU включая прогрев", "gpu_summary"),
-                ("Сводка", "summary"), ("Прогоны", "runs"), ("Ограничения", "warnings"))
+                ("Сводка", "summary"), ("Прогоны", "runs"),
+                ("Сценарии импортированного теста", "cases"), ("Ограничения", "warnings"))
     for title, key in sections:
         if key in row and row[key] is not None:
             lines += ["", title + ":", json.dumps(row[key], ensure_ascii=False, indent=2, default=str)]

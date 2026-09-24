@@ -671,7 +671,16 @@ class Studio(QObject):
         summary = result.get("summary") or {}
         config = result.get("config") or {}
         model = next((m for m in self.models if m["id"] == result.get("model_id")), {})
-        result.update(context=config.get("context", result.get("requested_context")),
+        if not model and result.get("legacy_source"):
+            # A locator is only a display hint, never proof for recommendations.
+            from runtime_profiles import model_key
+            locator = str(result.get("model") or "")
+            model = next((m for m in self.models if locator and (
+                (m.get("backend") == "gguf" and m.get("path") and model_key(m["path"]) == model_key(locator))
+                or (m.get("backend") == "ollama" and result.get("backend") == "ollama"
+                    and m.get("tag") == locator and m.get("host") == result.get("host")))), {})
+        result.update(context=config.get("context", result.get("requested_context", result.get("context"))),
+            display_model_id=model.get("id"),
             model_name=model.get("name", Path(str(result.get("model") or "Модель")).name),
             speed=summary.get("median_tokens_per_second"), ttft=summary.get("median_ttft_seconds"),
             prompt_speed=summary.get("median_prompt_tokens_per_second"),

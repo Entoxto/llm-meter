@@ -231,6 +231,31 @@ class StudioDesktopTests(unittest.TestCase):
         self.assertEqual(exposed, ["16723647574826069622", 7206168928])
         self.assertEqual(self.studio._values["models"][0]["fingerprint"][0], 16723647574826069622)
 
+    def test_legacy_report_can_be_displayed_and_exported_without_verified_identity(self):
+        model = self._model()
+        model.update(backend="gguf", path=str(self.root / "model.gguf"))
+        legacy = {"id": "legacy", "legacy_source": "old.json", "model": model["path"],
+                  "context": 32768, "identity_verified": False,
+                  "cases": [{"speed": 51.2}]}
+        shown = self.studio._result_view(legacy)
+        self.assertEqual(shown["display_model_id"], model["id"])
+        self.assertEqual(shown["context"], 32768)
+        self.assertNotIn("model_id", shown)
+        self.assertFalse(shown["identity_verified"])
+        self.studio._values["results"] = [shown]
+        self.studio.selectResult("legacy")
+        with patch.object(self.studio, "copyText") as copy:
+            self.studio.copyReport()
+        report = copy.call_args.args[0]
+        self.assertIn("32768", report)
+        self.assertIn("51.2", report)
+        self.assertNotIn(str(self.root), report)
+        self.studio.exportReport()
+        self.workers.complete("export")
+        self.studio._pump()
+        self.assertEqual(len(list(self.paths["reports"].glob("*.json"))), 1)
+        self.assertNotIn("display_model_id", legacy)
+
     def test_device_peak_is_not_confused_with_model_placement(self):
         row = self.studio._result_view({"gpu_peak_bytes": 10 * 2**30,
             "memory": {"vram_bytes": 7 * 2**30}})

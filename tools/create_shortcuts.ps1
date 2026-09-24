@@ -4,9 +4,14 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $executable = Join-Path $repoRoot 'dist\ModelStudio\ModelStudio.exe'
 $shortcutName = 'Модельная студия.lnk'
+$iconFile = Join-Path $repoRoot 'src\model_studio\desktop\icons\model-studio.ico'
+$iconLocation = "$iconFile,0"
 
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
     throw "Сначала соберите приложение: не найден $executable"
+}
+if (-not (Test-Path -LiteralPath $iconFile -PathType Leaf)) {
+    throw "Не найден файл значка приложения: $iconFile"
 }
 $executable = (Resolve-Path -LiteralPath $executable).Path
 $workingDirectory = [IO.Path]::GetDirectoryName($executable)
@@ -114,6 +119,12 @@ public static class ModelStudioShortcutProperty
         }
     }
 }
+
+public static class ModelStudioShellRefresh
+{
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern void SHChangeNotify(uint eventId, uint flags, [MarshalAs(UnmanagedType.LPWStr)] string path, IntPtr item2);
+}
 '@
 $destinations = @(
     (Join-Path $desktop $shortcutName),
@@ -132,7 +143,7 @@ foreach ($shortcutPath in $destinations) {
     $shortcut = $shell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $executable
     $shortcut.WorkingDirectory = $workingDirectory
-    $shortcut.IconLocation = "$executable,0"
+    $shortcut.IconLocation = $iconLocation
     $shortcut.Description = 'Модельная студия'
     $shortcut.Save()
     [ModelStudioShortcutProperty]::Set($shortcutPath, $appUserModelId)
@@ -140,10 +151,11 @@ foreach ($shortcutPath in $destinations) {
     $check = $shell.CreateShortcut($shortcutPath)
     if (-not [string]::Equals([IO.Path]::GetFullPath($check.TargetPath), $executable, [StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals([IO.Path]::GetFullPath($check.WorkingDirectory), $workingDirectory, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals($check.IconLocation, "$executable,0", [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($check.IconLocation, $iconLocation, [StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals([ModelStudioShortcutProperty]::Get($shortcutPath), $appUserModelId, [StringComparison]::Ordinal)) {
         throw "Не удалось проверить созданный ярлык: $shortcutPath"
     }
+    [ModelStudioShellRefresh]::SHChangeNotify(0x00002000, 0x0005, $shortcutPath, [IntPtr]::Zero)
     [pscustomobject]@{
         Shortcut = $shortcutPath
         Target = $check.TargetPath

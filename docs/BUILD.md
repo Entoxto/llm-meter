@@ -71,8 +71,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/create_shortcuts.ps1
 
 The script finds the Windows desktop through SpecialFolder and creates
 `Модельная студия.lnk` there and in the repository root. The shortcuts target
-`dist/ModelStudio/ModelStudio.exe`, use its icon and carry the same
+`dist/ModelStudio/ModelStudio.exe`, use the source ICO directly and carry the same
 `System.AppUserModel.ID` as the running application. They contain local paths
-and are not committed. An existing shortcut pointing elsewhere is not overwritten.
+and are not committed. Using the source ICO avoids the generic icon of an older installed EXE while a new build is staged. The script notifies the Windows shell about the updated shortcut. An existing shortcut pointing elsewhere is not overwritten.
 Windows taskbar pinning remains a user action: pin the updated running app;
 if an old pin keeps a cached icon, unpin it and pin the updated shortcut.

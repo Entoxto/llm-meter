@@ -15,6 +15,21 @@ Item {
     property string contextFilter: ""
     property string statusFilter: ""
     property string backendFilter: ""
+    readonly property var filteredResults: (bridge.results || []).filter(function(r) {
+        return (!page.v(bridge.selectedModel,"id","") || page.v(r,"display_model_id",page.v(r,"model_id",""))===page.v(bridge.selectedModel,"id",""))
+            && (!page.contextFilter || String(page.v(r,"context",""))===page.contextFilter)
+            && (!page.statusFilter || page.v(r,"status","")===page.statusFilter)
+            && (!page.backendFilter || page.v(page.v(r,"config",{}),"backend",page.v(r,"backend",""))===page.backendFilter)
+    })
+    function selectVisibleResult() {
+        if (page.mode!=="history") return
+        let current=page.v(bridge.selectedResult,"id","")
+        if (page.filteredResults.some(function(r) { return r.id===current })) return
+        let next=page.filteredResults.length ? page.filteredResults[0].id : ""
+        if (next!==current) bridge.selectResult(next)
+    }
+    onFilteredResultsChanged: selectVisibleResult()
+    onModeChanged: selectVisibleResult()
     function v(o,k,d) { let x=o && o[k]; return x===undefined || x===null || x==="" ? d : x }
     function shown(x,s) { return x===undefined || x===null || x==="" ? "Нет данных" : String(x)+(s||"") }
     function contextLabel(x) { let n=Number(x); return x===undefined || x===null || x==="" ? "Нет данных" : Number.isFinite(n) && n>=1024 ? (n%1024===0 ? n/1024 : Math.round(n/1000))+"K" : String(x) }
@@ -196,10 +211,9 @@ Item {
             StudioCard { visible: page.mode==="history" && !page.progressing; Layout.fillWidth: true; Layout.preferredHeight: 260
                 ColumnLayout { anchors.fill: parent; anchors.margins: 14; spacing: 9
                     Text { text: "Все замеры"; color: Theme.text; font.pixelSize: 18; font.bold: true }
-                    ListView { Layout.fillWidth: true; Layout.fillHeight: true; clip: true; model: bridge.results || []
+                    ListView { Layout.fillWidth: true; Layout.fillHeight: true; clip: true; model: page.filteredResults
                         delegate: Rectangle { required property var modelData; width: ListView.view.width;
-                            visible: (!page.v(bridge.selectedModel,"id","") || page.v(modelData,"model_id","")===page.v(bridge.selectedModel,"id","")) && (!page.contextFilter || String(page.v(modelData,"context",""))===page.contextFilter) && (!page.statusFilter || page.v(modelData,"status","")===page.statusFilter) && (!page.backendFilter || page.v(page.v(modelData,"config",{}),"backend",page.v(modelData,"backend",""))===page.backendFilter)
-                            height: visible ? 56 : 0; color: page.v(bridge.selectedResult,"id","")===page.v(modelData,"id","") ? "#202648" : "transparent"; border.color: Theme.border
+                            height: 56; color: page.v(bridge.selectedResult,"id","")===page.v(modelData,"id","") ? "#202648" : "transparent"; border.color: Theme.border
                             RowLayout { anchors.fill: parent; anchors.margins: 10
                                 Text { text: page.contextLabel(page.v(modelData,"context",null)); color: Theme.text; Layout.preferredWidth: 96 }
                                 Text { text: page.v(modelData,"model_name",""); color: Theme.muted; Layout.fillWidth: true; elide: Text.ElideRight }
@@ -211,7 +225,7 @@ Item {
                         }
                     }
                     StudioButton { visible: !!bridge.hasMoreResults; text: "Загрузить ещё замеры"; iconName: "chevron-down"; Layout.alignment: Qt.AlignHCenter; onClicked: bridge.loadMoreResults() }
-                    Text { text: page.v(bridge.selectedResult,"id","") ? "Выбранный замер: " + page.contextLabel(page.v(bridge.selectedResult,"context",null)) + "  •  " + page.shown(page.v(bridge.selectedResult,"speed",null)," ток/с") : "Выберите замер, чтобы посмотреть подробности."; color: Theme.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 12 }
+                    Text { text: page.v(bridge.selectedResult,"id","") ? "Выбранный замер: " + page.contextLabel(page.v(bridge.selectedResult,"context",null)) + "  •  " + page.shown(page.v(bridge.selectedResult,"speed",null)," ток/с") + (page.v(bridge.selectedResult,"legacy_source","") ? "  •  Импортированный отчёт" : "") : "Для выбранной модели и фильтров нет сохранённых замеров. Отчёт появится после сохранения результата."; color: Theme.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 12 }
                     RowLayout { visible: !!page.v(bridge.selectedResult,"id",""); Layout.fillWidth: true; spacing: 19
                         Text { text: "Среда: " + page.v(page.v(bridge.selectedResult,"config",{}),"runtime_name","Нет данных"); color: Theme.muted; font.pixelSize: 12 }
                         Text { text: "Первый токен: " + page.shown(page.v(bridge.selectedResult,"ttft",null)," с"); color: Theme.muted; font.pixelSize: 12 }
@@ -219,8 +233,8 @@ Item {
                     }
                     RowLayout { Layout.fillWidth: true
                         Item { Layout.fillWidth: true }
-                        StudioButton { text: "Скопировать отчёт"; iconName: "copy"; enabled: !!page.v(bridge.selectedResult,"id",""); onClicked: bridge.copyReport() }
-                        StudioButton { text: "Экспортировать…"; iconName: "download"; enabled: !!page.v(bridge.selectedResult,"id",""); onClicked: bridge.exportReport() }
+                        StudioButton { objectName: "copyReportButton"; text: "Скопировать отчёт"; iconName: "copy"; enabled: !!page.v(bridge.selectedResult,"id",""); onClicked: bridge.copyReport() }
+                        StudioButton { objectName: "exportReportButton"; text: "Экспортировать…"; iconName: "download"; enabled: !!page.v(bridge.selectedResult,"id",""); onClicked: bridge.exportReport() }
                     }
                 }
             }
