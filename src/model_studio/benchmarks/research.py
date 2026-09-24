@@ -120,7 +120,8 @@ def _gpu_signature() -> tuple[str | None, str | None]:
     try:
         found = subprocess.run([executable, "--query-gpu=name,memory.total,driver_version",
                                 "--format=csv,noheader,nounits"], capture_output=True,
-                               text=True, timeout=3, check=True)
+                               text=True, timeout=3, check=True,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         devices, versions = [], set()
         for row in csv.reader(found.stdout.splitlines()):
             if len(row) != 3:
