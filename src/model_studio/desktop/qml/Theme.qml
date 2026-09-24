@@ -1,6 +1,8 @@
 pragma Singleton
 import QtQuick
 QtObject {
+    readonly property int pagePadding: 24
+    readonly property int controlHeight: 36
     readonly property color bg: "#0d141e"
     readonly property color panel: "#141e2b"
     readonly property color panel2: "#192535"

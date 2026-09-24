@@ -13,6 +13,7 @@ import uuid
 from engine import Cancelled, run_benchmark
 from model_studio.backends.llama_cpp import LlamaCppBackend
 from model_studio.backends.ollama import OllamaBackend
+from model_studio.backends.images import image_mime
 from model_studio.backends.process import ManagedRuntime
 from model_studio.configuration import LaunchConfig
 from model_studio.domain import SessionBusy, SessionUnavailable, StreamChunk
@@ -48,6 +49,7 @@ class SessionController:
                     "context": config.context if config else None,
                     "effective_context": info.get("context_limit"),
                     "context_source": info.get("context_source"),
+                    "vision_available": getattr(client, "vision_available", None),
                     "backend": config.backend if config else None,
                     "host": client.host if client else (config.host if config else None),
                     "owned": bool(self._owned and self._owned.running),
@@ -156,6 +158,13 @@ class SessionController:
                 client = LlamaCppBackend(config.host, config.context)
                 model_id = config.model
                 client.prepare(model_id)
+                try:
+                    props = client.request("/props", timeout=3)
+                    modalities = props.get("modalities") or {}
+                    vision = modalities.get("vision") if isinstance(modalities, dict) else None
+                    client.vision_available = vision if type(vision) is bool else None
+                except Exception:
+                    client.vision_available = None
                 actual = client.model_info.get("context_limit")
                 if actual is not None and actual != config.context:
                     raise RuntimeError(f"External server context {actual} differs from requested {config.context}.")
@@ -309,6 +318,15 @@ class SessionController:
             if not isinstance(message, dict) or message.get("role") not in ("system", "user", "assistant") \
                     or not isinstance(message.get("content"), str):
                 raise ValueError("Chat messages need a role and string content.")
+            images = message.get("images", [])
+            if not isinstance(images, list) or any(not isinstance(item, str) for item in images):
+                raise ValueError("Chat images must be a list of base64 strings.")
+            if images and message["role"] != "user":
+                raise ValueError("Chat images are supported only in user messages.")
+            for encoded in images:
+                image_mime(encoded)
+        if any(message.get("images") for message in messages) and self.snapshot["vision_available"] is not True:
+            raise ValueError("The active runtime has not confirmed image input support.")
         operation, stop = self._begin("chat", require_ready=True)
         with self._lock:
             client, model_id, session_id = self._client, self._model_id, self._session_id

@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 from math import isfinite
 
 from engine import PROMPT
-from model_studio.configuration import LaunchConfig
+from model_studio.configuration import LaunchConfig, projector_identity
 
 
 _RUN_KEYS = ("index", "tokens", "output_tokens", "generation_seconds",
@@ -101,9 +101,16 @@ def plan_candidates(config, plan: dict) -> list[dict]:
 
 def _artifact(store, config: LaunchConfig) -> dict:
     row = next((r for r in store.models() if r["id"] == config.model_id), None)
+    projector = None
+    if config.mmproj:
+        try:
+            projector = projector_identity(config.mmproj)
+        except (OSError, RuntimeError, ValueError) as exc:
+            projector = {"path": config.mmproj, "identity_verified": False, "error": str(exc)}
     return {"id": config.model_id or None, "digest": row.get("digest") if row else None,
             "identity_verified": bool(row and row.get("identity_verified")),
-            "backend": row.get("backend") if row else config.backend}
+            "backend": row.get("backend") if row else config.backend,
+            "projector": projector}
 
 
 def _gpu_signature() -> tuple[str | None, str | None]:
@@ -172,10 +179,27 @@ def environment_snapshot(config, client=None, measured: dict | None = None) -> d
     driver = supplied.get("driver") or driver
     if runtime_build is not None and not isinstance(runtime_build, str):
         runtime_build = json.dumps(runtime_build, sort_keys=True, default=str)
+    projector_digest = None
+    projector_verified = not bool(config.mmproj)
+    projector_size_bytes = None
+    projector_mtime_ns = None
+    if config.mmproj:
+        try:
+            selected = projector_identity(config.mmproj)
+            projector_digest = selected["digest"]
+            projector_size_bytes = selected["size_bytes"]
+            projector_mtime_ns = str(selected["mtime_ns"])
+            projector_verified = True
+        except (OSError, RuntimeError, ValueError):
+            pass
     return {"backend": config.backend, "host": host, "runtime_name": config.runtime_name,
             "runtime_build": runtime_build, "runtime_version": version,
             "hardware": hardware, "driver": driver,
-            "verified": bool(local and runtime_build and hardware and driver),
+            "projector_digest": projector_digest,
+            "projector_size_bytes": projector_size_bytes,
+            "projector_mtime_ns": projector_mtime_ns,
+            "projector_verified": projector_verified,
+            "verified": bool(local and runtime_build and hardware and driver and projector_verified),
             "sources": {"runtime_build": "executable stat" if config.managed else "runtime API",
                         "hardware": "nvidia-smi" if driver != "CPU" else "platform",
                         "driver": "nvidia-smi" if driver != "CPU" else "CPU"}}
@@ -213,12 +237,16 @@ def prepare_result(store, config, measured: dict, plan: dict | None = None, clie
              if isinstance(item.get("peak_vram_bytes"), (int, float))]
     gpu_peak_bytes = max(peaks) if peaks else None
     environment = environment_snapshot(config, client, measured)
+    artifact = _artifact(store, config)
+    selected_projector = artifact.get("projector")
+    loaded_projector = getattr(client, "projector_identity", None) if client is not None else None
     supplied = plan.get("environment") if isinstance(plan.get("environment"), dict) else {}
     if supplied:
         for key in ("runtime_build", "hardware", "driver"):
             environment[key] = supplied.get(key) or environment[key]
         environment["verified"] = bool(supplied.get("verified") is True and all(
-            environment.get(key) for key in ("runtime_build", "hardware", "driver")))
+            environment.get(key) for key in ("runtime_build", "hardware", "driver"))
+            and (not config.mmproj or environment.get("projector_verified")))
     prompt = measured.get("prompt") or PROMPT
     method = measured.get("method") or "legacy-short-v2"
     requested_runs = measured.get("requested_runs") or len(runs)
@@ -226,6 +254,13 @@ def prepare_result(store, config, measured: dict, plan: dict | None = None, clie
     options = measured.get("options") or {"temperature": 0, "seed": 42}
     warnings = list(measured.get("warnings") or [])
     blocking_reasons = []
+    if config.mmproj and (not selected_projector or not selected_projector.get("identity_verified")
+                          or loaded_projector != selected_projector):
+        blocking_reasons.append("Vision projector identity or active attachment is unverified")
+    reported_vision = getattr(client, "vision_available", None) if client is not None else None
+    vision_available = reported_vision if type(reported_vision) is bool else None
+    if config.mmproj and vision_available is not True:
+        blocking_reasons.append("Runtime did not confirm vision input support")
     if measured.get("status") != "completed":
         blocking_reasons.append("Измерение не завершено")
     if len(runs) != requested_runs:
@@ -266,7 +301,8 @@ def prepare_result(store, config, measured: dict, plan: dict | None = None, clie
             "runtime_model_id": measured.get("runtime_model_id") or config.model,
             "config": config.to_dict(), "effective_config": effective,
             "effective_config_verified": actual == config.context and mtp_verified,
-            "artifact": _artifact(store, config), "environment": environment,
+            "artifact": artifact, "environment": environment,
+            "vision_available": vision_available,
             "workload": {"method": method, "signature": signature,
                          "prompt_digest": hashlib.sha256(prompt.encode()).hexdigest(),
                          "runs_requested": requested_runs, "tokens_per_run": requested_tokens,
@@ -370,13 +406,14 @@ def run_research(session, store, config, plan: dict, emit=None,
         original_artifact = saved_plan.get("artifact") or {}
         current_artifact = _artifact(store, config)
         if not (original_artifact.get("identity_verified") and current_artifact.get("identity_verified")
-                and original_artifact.get("digest") == current_artifact.get("digest")):
+                and original_artifact.get("digest") == current_artifact.get("digest")
+                and original_artifact.get("projector") == current_artifact.get("projector")):
             raise ValueError("Artifact identity changed or is unverified; cannot reuse steps")
         old_env = saved_plan.get("baseline_environment") or {}
         new_env = environment_snapshot(config, session.client)
         if not (old_env.get("verified") and new_env.get("verified") and all(
                 old_env.get(k) == new_env.get(k) for k in
-                ("backend", "runtime_build", "hardware", "driver"))):
+                ("backend", "runtime_build", "hardware", "driver", "projector_digest"))):
             raise ValueError("Runtime or hardware changed; start a new research job")
         plan = {**saved_plan, **plan}
         candidates = plan_candidates(config, plan)

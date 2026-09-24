@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from engine import Cancelled
 from model_studio.backends.llama_cpp import LlamaCppBackend
-from model_studio.configuration import LaunchConfig
+from model_studio.configuration import LaunchConfig, projector_identity
 from model_studio.platform.windows_process import OwnedProcess
 
 
@@ -58,6 +58,19 @@ class ManagedRuntime:
             raise ValueError(f"llama-server executable does not exist: {executable}")
         if not model.is_file() or model.suffix.lower() != ".gguf":
             raise ValueError("Select an existing GGUF model file.")
+        try:
+            with model.open("rb") as source:
+                source.read(1)
+        except OSError as exc:
+            raise ValueError("Selected GGUF model is not readable.") from exc
+        projector = None
+        if config.mmproj:
+            try:
+                projector = projector_identity(config.mmproj)
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"Vision projector is unavailable or unreadable: {exc}") from exc
+            if Path(projector["path"]) == model:
+                raise ValueError("Vision projector must differ from the model GGUF.")
         client = LlamaCppBackend(config.host, config.context)
         url = urlsplit(client.host)
         if url.scheme != "http" or url.hostname not in ("127.0.0.1", "localhost") or url.path:
@@ -78,6 +91,8 @@ class ManagedRuntime:
             args += ["--reasoning", config.reasoning]
         if config.mtp:
             args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(config.draft)]
+        if projector:
+            args += ["--mmproj", projector["path"]]
         args += list(config.extra_args)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.log_path = self.logs_dir / f"managed-server-{time.time_ns()}.log"
@@ -110,6 +125,11 @@ class ManagedRuntime:
                     raise RuntimeError(f"Server context {actual_context!r} differs from requested {config.context}.")
                 client.client.runtime_profile = config.runtime_name or executable.name
                 client.client.required_capabilities = ("mtp",) if config.mtp else ()
+                client.projector_identity = projector
+                props = client.client.request("/props", timeout=3)
+                modalities = props.get("modalities") or {}
+                vision = modalities.get("vision") if isinstance(modalities, dict) else None
+                client.vision_available = vision if type(vision) is bool else None
                 client.model_info["runtime_profile"] = client.client.runtime_profile
                 client.model_info["mtp_status"] = "awaiting verification" if config.mtp else "disabled"
                 return client, model_id

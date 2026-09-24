@@ -59,6 +59,7 @@ class Studio(QObject):
     changed = Signal()
     closeReady = Signal()
     confirmationRequested = Signal(str)
+    messageAccepted = Signal()
 
     def __init__(self, store: Store, paths: dict, legacy_root: Path, initialize=True, auto_import=False):
         super().__init__()
@@ -69,10 +70,10 @@ class Studio(QObject):
         self.core = SessionController(paths["logs"], self._session_event)
         self.chat_service = ChatService(store, self.core, self._session_event)
         self._values = dict(models=[], selectedModel={}, draft={"context": 32768, "mtp": False,
-            "draft": 2, "reasoning": "auto", "kv_type": "f16", "gpu_layers": 99},
+            "draft": 2, "reasoning": "auto", "kv_type": "f16", "gpu_layers": 99, "vision": False},
             session=self.core.snapshot, results=[], recommendations=[], telemetry={}, projects=[],
             selectedProject={}, conversations=[], messages=[], research={}, settings={},
-            selectedResult={}, matchingResult={}, researchJobs=[], hasMoreResults=False,
+            selectedResult={}, matchingResult={}, researchJobs=[], pendingImages=[], hasMoreResults=False,
             hasMoreConversations=False, busy=False, notice="", error="", page=0)
         self._pending = {}
         self._session_pending = False
@@ -108,7 +109,7 @@ class Studio(QObject):
     projects = _get("projects", "QVariantList")
     selectedProject = _get("selectedProject", "QVariantMap")
     conversations = _get("conversations", "QVariantList")
-    messages = _get("messages", "QVariantList")
+    pendingImages = _get("pendingImages", "QVariantList")
     research = _get("research", "QVariantMap")
     settings = _get("settings", "QVariantMap")
     selectedResult = _get("selectedResult", "QVariantMap")
@@ -119,6 +120,23 @@ class Studio(QObject):
     busy = _get("busy", bool)
     notice = _get("notice", str)
     error = _get("error", str)
+
+    def _image_view(self, value):
+        value = dict(value)
+        path = Path(value.get("path", ""))
+        path = path if path.is_absolute() else self.store.path.parent / path
+        root = (self.store.path.parent / "attachments").resolve()
+        value["preview_url"] = QUrl.fromLocalFile(str(path.resolve())).toString() if path.resolve().is_relative_to(root) else ""
+        return value
+
+    @Property("QVariantList", notify=changed)
+    def messages(self):
+        result = []
+        for message in self._values["messages"]:
+            message = dict(message)
+            message["images"] = [self._image_view(v) for v in (message.get("metadata") or {}).get("attachments", [])]
+            result.append(message)
+        return qt_value(result)
 
     @Property(int, notify=changed)
     def page(self):
@@ -195,6 +213,8 @@ class Studio(QObject):
             elif event == "chat_started":
                 self._conversation_id = data["conversation_id"]
                 self._values["messages"] = data["messages"]
+                self._values["pendingImages"] = []
+                self.messageAccepted.emit()
             elif event in ("chat_unsaved", "chat_save_error"):
                 partial = data.get("result", data)
                 if self.messages and self.messages[-1].get("role") == "assistant":
@@ -306,6 +326,15 @@ class Studio(QObject):
     def _select(self, model):
         changed = self.selectedModel.get("id") != model.get("id")
         model = dict(model)
+        projector = ""
+        if model.get("backend") == "gguf":
+            from runtime_profiles import model_key
+            projector = next((value for path, value in self.settings.get("model_projectors", {}).items()
+                              if model_key(path) == model_key(model.get("path", ""))), "")
+        if model:
+            model.update(mmproj_path=projector, mmproj_available=bool(projector and Path(projector).is_file()))
+        if changed:
+            self._values["draft"]["vision"] = False
         if model:
             try:
                 profile = self._profile(model)
@@ -334,7 +363,14 @@ class Studio(QObject):
             config = self._config()
         except (ImportError, TypeError, ValueError):
             return
-        key = (config.model_id, config.backend, config.executable, config.host)
+        projector_stamp = None
+        if config.mmproj:
+            try:
+                stamp = Path(config.mmproj).stat()
+                projector_stamp = (stamp.st_size, stamp.st_mtime_ns)
+            except OSError:
+                pass
+        key = (config.model_id, config.backend, config.executable, config.host, config.mmproj, projector_stamp)
         if key == self._environment_key and self._environment is not None:
             return
         self._environment_key = key
@@ -357,6 +393,8 @@ class Studio(QObject):
         extra, _, _ = normalize_profile(profile)
         ollama = model["backend"] == "ollama"
         managed = model["backend"] == "gguf"
+        if managed and draft.get("vision") and not model.get("mmproj_path"):
+            raise ValueError("Сначала выберите модуль изображений mmproj.")
         return LaunchConfig(model=model.get("tag") or model.get("path") or model["name"],
             model_id=model["id"], backend="ollama" if ollama else "llama.cpp",
             context=int(draft["context"]), managed=managed,
@@ -367,7 +405,8 @@ class Studio(QObject):
             runtime_name=profile.get("name", "Ollama" if ollama else "llama.cpp"), mtp=bool(draft.get("mtp")) if managed else False,
             draft=int(draft.get("draft", 2)), reasoning=draft.get("reasoning", "auto"),
             gpu_layers=int(draft.get("gpu_layers", 99)) if managed else 99,
-            kv_type=draft.get("kv_type", "f16") if managed else "f16")
+            kv_type=draft.get("kv_type", "f16") if managed else "f16",
+            mmproj=model.get("mmproj_path", "") if managed and draft.get("vision") else "")
 
     def _refresh_recommendations(self):
         self._values["matchingResult"] = {}
@@ -383,6 +422,8 @@ class Studio(QObject):
                 if (result.get("model_id") == config.get("model_id") and result.get("effective_config_verified")
                     and result.get("comparison_eligible") and self._environment and self._environment.get("verified")
                     and all(environment.get(k) == self._environment.get(k) for k in ("backend", "runtime_build", "hardware", "driver"))
+                    and (not config.get("mmproj") or (self._environment.get("projector_verified") and
+                         (result.get("artifact", {}).get("projector") or {}).get("digest") == self._environment.get("projector_digest")))
                     and all(effective.get(k) == v for k, v in config.items())
                     and result.get("status") == "completed"):
                     self._values["matchingResult"] = result
@@ -405,6 +446,9 @@ class Studio(QObject):
         if key in self.draft:
             self._values["draft"][key] = value
             self._refresh_recommendations()
+            if key == "vision":
+                self._environment = None
+                self._capture_environment()
             self.changed.emit()
 
     @Slot()
@@ -529,7 +573,7 @@ class Studio(QObject):
         self._conversation_id = None
         self._conversation_revision += 1
         self._loading_conversation = False
-        self._update(messages=[], page=1)
+        self._update(messages=[], pendingImages=[], page=1)
 
     @Slot(str)
     def selectConversation(self, conversation_id):
@@ -539,7 +583,7 @@ class Studio(QObject):
         self._conversation_revision += 1
         revision = self._conversation_revision
         self._loading_conversation = True
-        self._update(messages=[])
+        self._update(messages=[], pendingImages=[])
         def done(value):
             if revision == self._conversation_revision:
                 self._loading_conversation = False
@@ -558,8 +602,11 @@ class Studio(QObject):
 
     @Slot(str)
     def sendMessage(self, text):
+        if "images" in self._pending:
+            self._update(error="Дождитесь загрузки изображений."); return
         text = text.strip()
-        if not text:
+        images = [dict(item) for item in self.pendingImages]
+        if not text and not images:
             return
         if self._loading_conversation:
             self._update(error="Дождитесь загрузки диалога."); return
@@ -569,9 +616,50 @@ class Studio(QObject):
         max_tokens = min(2048, max(1, (self.session.get("context") or 32768) // 4))
         def done(value):
             self._conversation_id = value["conversation_id"]
-            self._update(messages=value["messages"])
+            self._update(messages=value["messages"], pendingImages=[])
             self._reload_history()
-        self._submit("chat", lambda: self.chat_service.send(conversation_id, text, max_tokens), done, session=True)
+        self._submit("chat", lambda: self.chat_service.send(conversation_id, text, max_tokens, attachments=images), done, session=True)
+
+    @Slot()
+    def addChatImages(self):
+        if self.busy or "images" in self._pending:
+            return
+        if self.session.get("status") != "ready" or self.session.get("vision_available") is not True:
+            self._update(error="Для изображений запустите модель с подтверждённой поддержкой зрения. Для GGUF выберите mmproj в ручных настройках запуска.")
+            return
+        files, _ = QFileDialog.getOpenFileNames(None, "Изображения для модели", "", "Изображения (*.png *.jpg *.jpeg)")
+        if not files:
+            return
+        if len(files) + len(self.pendingImages) > 4:
+            self._update(error="Можно прикрепить до четырёх изображений к сообщению.")
+            return
+        previous = list(self.pendingImages)
+        def load():
+            from model_studio.attachments import import_image
+            return [import_image(path, self.store.path.parent) for path in files]
+        revision = self._conversation_revision
+        def done(items):
+            if revision == self._conversation_revision:
+                self._update(pendingImages=previous + [self._image_view(item) for item in items])
+        self._submit("images", load, done)
+
+    @Slot(str)
+    def removeChatImage(self, image_id):
+        if not self.busy:
+            self._update(pendingImages=[item for item in self.pendingImages if item.get("id") != image_id])
+
+    @Slot()
+    def chooseProjector(self):
+        model = dict(self.selectedModel)
+        if model.get("backend") != "gguf" or not model.get("testable", True):
+            return
+        path, _ = QFileDialog.getOpenFileName(None, "Модуль изображений mmproj для выбранной модели",
+            str(Path(model["path"]).parent), "Модули GGUF (*.gguf)")
+        if path:
+            associations = dict(self.settings.get("model_projectors", {}))
+            associations[model["path"]] = path
+            self._values["draft"]["vision"] = True
+            self.saveSettings({"model_projectors": associations})
 
     def _result_view(self, result):
         result = dict(result)
@@ -652,6 +740,7 @@ class Studio(QObject):
         result = next((r for r in self.results if r["id"] == rec["result_id"]), {})
         config = result.get("config", {})
         self._values["draft"].update({k: config[k] for k in self.draft if k in config})
+        self._values["draft"]["vision"] = bool(config.get("mmproj"))
         self._refresh_recommendations()
         self._update(selectedResult=result)
 
@@ -736,7 +825,7 @@ class Studio(QObject):
 
     @Slot()
     def backup(self):
-        path = self.paths["backups"] / ("studio-" + dt.datetime.now().strftime("%Y%m%d-%H%M%S") + ".db")
+        path = self.paths["backups"] / ("studio-" + dt.datetime.now().strftime("%Y%m%d-%H%M%S") + ".studio-backup")
         self._submit("backup", lambda: self.store.backup(path), lambda p: self._update(notice="Резервная копия: " + str(p)))
 
     @Slot()
@@ -745,7 +834,7 @@ class Studio(QObject):
             self._update(error="Перед восстановлением выгрузите модель."); return
         if self.busy or self._pending:
             self._update(error="Для восстановления дождитесь завершения фоновых операций."); return
-        path, _ = QFileDialog.getOpenFileName(None, "Восстановить резервную копию", str(self.paths["backups"]), "SQLite (*.db)")
+        path, _ = QFileDialog.getOpenFileName(None, "Восстановить резервную копию", str(self.paths["backups"]), "Резервная копия (*.studio-backup *.db)")
         if path:
             self._submit("restore", lambda: self.store.restore_backup(path), lambda _: self.refresh(), session=True)
 

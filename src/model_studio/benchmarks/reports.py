@@ -15,7 +15,7 @@ def _private(value, key=""):
         return {k: _private(v, k) for k, v in value.items()}
     if isinstance(value, list):
         return [_private(v, key) for v in value]
-    if isinstance(value, str) and (key in {"path", "locator", "model", "executable", "model_path", "log_path"}
+    if isinstance(value, str) and (key in {"path", "locator", "model", "mmproj", "executable", "model_path", "log_path"}
                                    or key.endswith("_path")):
         return value.replace("\\", "/").split("/")[-1] if "/" in value or "\\" in value else value
     if isinstance(value, str):

@@ -35,7 +35,7 @@ def main(argv=None):
             QFontDatabase.addApplicationFont(str(Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / font))
     app.setOrganizationName("ModelStudio")
     app.setApplicationName("Модельная студия")
-    app.setFont(QFont("Segoe UI", 11))
+    app.setFont(QFont("Segoe UI", 10))
     paths = ensure_data_dirs()
     lock = QLockFile(str(paths["database"].with_suffix(".lock")))
     lock.setStaleLockTime(0)

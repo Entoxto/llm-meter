@@ -9,7 +9,11 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import tempfile
 from uuid import uuid4
+import zipfile
+
+from model_studio.attachments import MAX_IMAGE_BYTES, load_image, reference
 
 
 def _now() -> str:
@@ -32,6 +36,30 @@ def _page(limit: int | None, offset: int) -> tuple[str, tuple[int, ...]]:
     if limit is None and offset == 0:
         return "", ()
     return " LIMIT ? OFFSET ?", (limit if limit is not None else -1, offset)
+
+
+def _validate_database(source: Path) -> None:
+    required = {"schema_migrations", "settings", "models", "benchmark_results",
+                "conversations", "messages", "projects", "research_jobs", "imports"}
+    with closing(sqlite3.connect(f"file:{source.as_posix()}?mode=ro", uri=True)) as candidate:
+        if candidate.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+            raise ValueError("Backup failed SQLite integrity check")
+        tables = {r[0] for r in candidate.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not required <= tables or not candidate.execute(
+                "SELECT 1 FROM schema_migrations WHERE version=1").fetchone():
+            raise ValueError("Backup has an unsupported schema")
+
+
+def _bundle_references(source: Path) -> set[str]:
+    names: set[str] = set()
+    with closing(sqlite3.connect(source)) as db:
+        for (payload,) in db.execute("SELECT payload FROM messages"):
+            attachments = (_object(payload).get("metadata") or {}).get("attachments") or []
+            if not isinstance(attachments, list):
+                raise ValueError("Backup contains invalid attachment references")
+            for item in attachments:
+                names.add(reference(item)["path"])
+    return names
 
 
 class Store:
@@ -403,6 +431,25 @@ class Store:
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination == self.path:
             raise ValueError("Backup destination is the live database")
+        if destination.suffix == ".studio-backup":
+            with tempfile.TemporaryDirectory(prefix=".studio-bundle-", dir=destination.parent) as work:
+                snapshot = Path(work) / "studio.db"
+                with self._connection() as source, closing(sqlite3.connect(snapshot)) as target:
+                    source.backup(target)
+                names = _bundle_references(snapshot)
+                archive = Path(work) / "backup.zip"
+                with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED,
+                                     compresslevel=6) as bundle:
+                    bundle.write(snapshot, "studio.db")
+                    for name in sorted(names):
+                        image_id = Path(name).stem
+                        mime = "image/png" if name.endswith(".png") else "image/jpeg"
+                        item = {"id": image_id, "path": name, "mime": mime,
+                                "size": (self.path.parent / name).stat().st_size}
+                        load_image(item, self.path.parent)
+                        bundle.write(self.path.parent / name, name)
+                os.replace(archive, destination)
+            return destination
         with self._connection() as source, closing(sqlite3.connect(destination)) as target:
             source.backup(target)
         return destination
@@ -417,15 +464,10 @@ class Store:
         source = Path(path).expanduser().resolve(strict=True)
         if source == self.path:
             raise ValueError("Backup source is the live database")
-        required = {"schema_migrations", "settings", "models", "benchmark_results",
-                    "conversations", "messages", "projects", "research_jobs", "imports"}
+        if source.suffix == ".studio-backup":
+            return self._restore_bundle(source)
+        _validate_database(source)
         with closing(sqlite3.connect(f"file:{source.as_posix()}?mode=ro", uri=True)) as candidate:
-            if candidate.execute("PRAGMA quick_check").fetchone()[0] != "ok":
-                raise ValueError("Backup failed SQLite integrity check")
-            tables = {r[0] for r in candidate.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if not required <= tables or not candidate.execute(
-                    "SELECT 1 FROM schema_migrations WHERE version=1").fetchone():
-                raise ValueError("Backup has an unsupported schema")
             stage = self.path.with_name(f".{self.path.name}.{uuid4().hex}.restore")
             try:
                 with closing(sqlite3.connect(stage)) as target:
@@ -436,6 +478,89 @@ class Store:
                 os.replace(stage, self.path)
             finally:
                 stage.unlink(missing_ok=True)
+        self._migrate()
+        return preserved
+
+    def _restore_bundle(self, source: Path) -> Path:
+        """Restore a validated portable DB + image archive; never extract arbitrary paths."""
+        with tempfile.TemporaryDirectory(prefix=".studio-restore-", dir=self.path.parent) as work:
+            stage_dir = Path(work)
+            try:
+                with zipfile.ZipFile(source) as bundle:
+                    infos = bundle.infolist()
+                    names = [info.filename for info in infos]
+                    if (len(names) > 10_000 or len(names) != len(set(names))
+                            or "studio.db" not in names):
+                        raise ValueError("Backup archive has invalid entries")
+                    total = 0
+                    extracted_total = 0
+                    for info in infos:
+                        name = info.filename
+                        if info.is_dir() or (name != "studio.db" and not (
+                                name.startswith("attachments/") and name.count("/") == 1
+                                and name.endswith((".png", ".jpg")))):
+                            raise ValueError("Backup archive contains an unsafe path")
+                        if name != "studio.db":
+                            image_id = Path(name).stem
+                            try:
+                                reference({"id": image_id, "path": name,
+                                           "mime": "image/png" if name.endswith(".png") else "image/jpeg",
+                                           "size": info.file_size})
+                            except ValueError as exc:
+                                raise ValueError("Backup archive contains an invalid image name") from exc
+                        cap = 1024 * 1024 * 1024 if name == "studio.db" else MAX_IMAGE_BYTES
+                        if info.file_size < 1 or info.file_size > cap:
+                            raise ValueError("Backup archive entry exceeds size limit")
+                        total += info.file_size
+                        if total > 2 * 1024 * 1024 * 1024:
+                            raise ValueError("Backup archive is too large")
+                        target = stage_dir / name
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with bundle.open(info) as incoming, target.open("xb") as outgoing:
+                            actual = 0
+                            while chunk := incoming.read(1024 * 1024):
+                                actual += len(chunk)
+                                extracted_total += len(chunk)
+                                if actual > cap:
+                                    raise ValueError("Backup archive entry exceeds size limit")
+                                if extracted_total > 2 * 1024 * 1024 * 1024:
+                                    raise ValueError("Backup archive is too large")
+                                outgoing.write(chunk)
+                        if actual != info.file_size:
+                            raise ValueError("Backup archive entry is incomplete")
+            except zipfile.BadZipFile as exc:
+                raise ValueError("Backup archive is damaged") from exc
+            stage_db = stage_dir / "studio.db"
+            _validate_database(stage_db)
+            needed = _bundle_references(stage_db)
+            if not needed <= set(names):
+                raise ValueError("Backup archive is missing referenced images")
+            if set(names) - {"studio.db"} != needed:
+                raise ValueError("Backup archive contains unreferenced images")
+            for name in needed:
+                item = {"id": Path(name).stem, "path": name,
+                        "mime": "image/png" if name.endswith(".png") else "image/jpeg",
+                        "size": (stage_dir / name).stat().st_size}
+                load_image(item, stage_dir)
+            backup_dir = self.path.parent / "backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            preserved = self.backup(backup_dir / f"before-restore-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.studio-backup")
+            attachments_dir = self.path.parent / "attachments"
+            staged_attachments = stage_dir / "attachments"
+            staged_attachments.mkdir(exist_ok=True)
+            previous_attachments = stage_dir / "previous-attachments"
+            had_attachments = attachments_dir.exists()
+            if had_attachments:
+                os.replace(attachments_dir, previous_attachments)
+            try:
+                os.replace(staged_attachments, attachments_dir)
+                os.replace(stage_db, self.path)
+            except Exception:
+                if attachments_dir.exists():
+                    os.replace(attachments_dir, staged_attachments)
+                if had_attachments:
+                    os.replace(previous_attachments, attachments_dir)
+                raise
         self._migrate()
         return preserved
 

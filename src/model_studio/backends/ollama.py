@@ -5,6 +5,7 @@ import threading
 from typing import Iterator
 
 from engine import Client
+from model_studio.backends.images import image_mime
 from model_studio.domain import StreamChunk
 
 
@@ -16,6 +17,7 @@ class OllamaBackend:
         self.client.no_truncate = True
         self.client.reasoning = "auto"
         self.client.keep_alive = -1
+        self.vision_available: bool | None = None
 
     def __getattr__(self, name):
         return getattr(self.client, name)
@@ -42,6 +44,9 @@ class OllamaBackend:
             requested = self.client.reasoning == "on"
             if not any(type(value) is bool and value is requested for value in values):
                 raise ValueError(f"Ollama model does not confirm reasoning={self.client.reasoning} support.")
+        show = self.client.request("/api/show", {"model": model}, timeout=15)
+        capabilities = show.get("capabilities")
+        self.vision_available = ("vision" in capabilities) if isinstance(capabilities, list) else None
         return result
 
     def cancel(self) -> None:
@@ -76,7 +81,15 @@ class OllamaBackend:
 
     def chat(self, model: str, messages: list[dict], max_tokens: int,
              temperature: float, stop: threading.Event) -> Iterator[StreamChunk | dict]:
-        payload = {"model": model, "messages": messages, "stream": True,
+        converted = []
+        for message in messages:
+            row = {"role": message["role"], "content": message["content"]}
+            if message.get("images"):
+                for encoded in message["images"]:
+                    image_mime(encoded)
+                row["images"] = message["images"]
+            converted.append(row)
+        payload = {"model": model, "messages": converted, "stream": True,
                    "keep_alive": self.client.keep_alive,
                    "truncate": False,
                    "options": {"num_ctx": self.client.context, "num_predict": max_tokens,

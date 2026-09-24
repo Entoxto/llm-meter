@@ -5,6 +5,7 @@ import threading
 from typing import Iterator
 
 from llama_cpp import LlamaCppClient
+from model_studio.backends.images import image_mime
 from model_studio.domain import StreamChunk
 
 
@@ -28,7 +29,19 @@ class LlamaCppBackend:
 
     def chat(self, model: str, messages: list[dict], max_tokens: int,
              temperature: float, stop: threading.Event) -> Iterator[StreamChunk | dict]:
-        payload = {"model": model, "messages": messages, "stream": True,
+        converted = []
+        for message in messages:
+            images = message.get("images") or []
+            if images:
+                content = ([{"type": "text", "text": message["content"]}]
+                           if message["content"] else [])
+                content.extend({"type": "image_url", "image_url":
+                                {"url": f"data:{image_mime(encoded)};base64,{encoded}"}}
+                               for encoded in images)
+            else:
+                content = message["content"]
+            converted.append({"role": message["role"], "content": content})
+        payload = {"model": model, "messages": converted, "stream": True,
                    "stream_options": {"include_usage": True}, "max_tokens": max_tokens,
                    "temperature": temperature}
         stream = self.client.stream("/v1/chat/completions", payload, stop, sse=True)

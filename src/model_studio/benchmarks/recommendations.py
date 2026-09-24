@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from math import isfinite
+from pathlib import Path
 
 
 _TITLES = {"speed": "Максимальная скорость", "context": "Максимальный контекст",
            "balanced": "Сбалансированный"}
 _CONFIG_KEYS = ("backend", "model", "context", "host", "executable", "managed",
-                "extra_args", "gpu_layers", "kv_type", "reasoning", "mtp", "draft")
+                "extra_args", "gpu_layers", "kv_type", "reasoning", "mtp", "draft", "mmproj")
 
 
 def _card(key: str, reason: str, row: dict | None = None, current: dict | None = None) -> dict:
@@ -31,12 +32,18 @@ def _eligible(row: dict) -> bool:
     environment = row.get("environment") or {}
     artifact = row.get("artifact") or {}
     workload = row.get("workload") or {}
+    selected = (row.get("config") or {}).get("mmproj")
+    projector = artifact.get("projector")
+    module_proven = (not selected and not projector) or bool(
+        selected and isinstance(projector, dict) and projector.get("identity_verified") is True
+        and projector.get("digest") and environment.get("projector_digest") == projector.get("digest"))
     return (row.get("status") in ("completed", "complete")
             and isinstance(speed, (int, float)) and isfinite(speed) and speed > 0
             and row.get("comparison_eligible") is True
             and isinstance((row.get("effective_config") or {}).get("context"), int)
             and artifact.get("identity_verified") is True and bool(artifact.get("digest"))
             and environment.get("verified") is True
+            and module_proven
             and all(environment.get(k) for k in ("runtime_build", "hardware", "driver"))
             and row.get("effective_config_verified") is True
             and bool(workload.get("signature")) and bool(workload.get("method")))
@@ -50,6 +57,18 @@ def recommendations(results: list[dict], current_config: dict | None = None,
                                        current_environment.get("verified") is not True):
         reason = "Среда текущего запуска ещё не проверена; сохранённые замеры доступны в истории."
         return [_card(key, reason) for key in _TITLES]
+    if current_config and current_config.get("mmproj"):
+        try:
+            stat = Path(current_config["mmproj"]).resolve(strict=True).stat()
+            same = (current_environment.get("projector_verified") is True
+                    and bool(current_environment.get("projector_digest"))
+                    and current_environment.get("projector_size_bytes") == stat.st_size
+                    and current_environment.get("projector_mtime_ns") == str(stat.st_mtime_ns))
+        except OSError:
+            same = False
+        if not same:
+            reason = "Vision projector changed or is unavailable; refresh the runtime environment."
+            return [_card(key, reason) for key in _TITLES]
     eligible = [row for row in results if _eligible(row)]
     if current_config:
         current_id = current_config.get("model_id")
@@ -57,13 +76,15 @@ def recommendations(results: list[dict], current_config: dict | None = None,
             eligible = [row for row in eligible if row.get("model_id") == current_id]
         eligible = [row for row in eligible if all(
             (row.get("environment") or {}).get(key) == current_environment.get(key)
-            for key in ("backend", "runtime_build", "hardware", "driver"))]
+            for key in ("backend", "runtime_build", "hardware", "driver", "projector_digest"))]
     groups = defaultdict(list)
     for row in eligible:
         artifact = row["artifact"]
         env = row["environment"]
         workload = row["workload"]
-        key = (row.get("model_id"), artifact["digest"], env.get("backend"), env["runtime_build"],
+        projector = artifact.get("projector") or {}
+        key = (row.get("model_id"), artifact["digest"], projector.get("digest"),
+               env.get("backend"), env["runtime_build"],
                env["hardware"], env["driver"], workload["signature"])
         groups[key].append(row)
     if not groups:

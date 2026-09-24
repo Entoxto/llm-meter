@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import base64
 import sys
 import tempfile
 import unittest
@@ -9,8 +10,10 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from model_studio.chat import ChatPersistenceError, ChatService
+from model_studio.attachments import AttachmentError, import_image
 from model_studio.domain import StreamChunk
 from model_studio.storage.store import Store
+from tests.test_studio_attachments import png_pixel
 
 
 class FakeSession:
@@ -111,6 +114,46 @@ class ChatTests(unittest.TestCase):
         rows = store.messages(unsaved[-1]["conversation_id"])
         self.assertEqual(rows[0]["status"], "complete")
         self.assertEqual(rows[1]["status"], "streaming")
+
+    def test_image_sent_and_replayed_from_managed_reference(self):
+        image = Path(self.temp.name) / "photo.png"
+        image.write_bytes(png_pixel())
+        item = import_image(image, Path(self.temp.name))
+        self.session.snapshot.update(vision_available=True, context=16384,
+                                     effective_context=16384)
+        first = self.service.send(None, "Look", max_tokens=32, attachments=[item])
+        user = first["messages"][0]
+        self.assertEqual(user["metadata"]["attachments"][0]["path"],
+                         f"attachments/{item['id']}.png")
+        self.assertNotIn("images", user)
+        self.assertEqual(base64.b64decode(self.session.requests[0][0]["images"][0]), png_pixel())
+        self.service.send(first["conversation_id"], "Next", max_tokens=32)
+        self.assertEqual(base64.b64decode(self.session.requests[1][0]["images"][0]), png_pixel())
+        self.assertNotIn("images", self.session.requests[1][-1])
+
+    def test_image_requires_verified_vision_and_missing_history_fails_before_save(self):
+        image = Path(self.temp.name) / "photo.png"
+        image.write_bytes(png_pixel())
+        item = import_image(image, Path(self.temp.name))
+        with self.assertRaisesRegex(AttachmentError, "поддержку изображений"):
+            self.service.send(None, "Look", max_tokens=32, attachments=[item])
+        self.assertEqual(self.store.conversations(), [])
+        self.session.snapshot.update(vision_available=True, context=16384,
+                                     effective_context=16384)
+        first = self.service.send(None, "Look", max_tokens=32, attachments=[item])
+        Path(item["path"]).unlink()
+        with self.assertRaisesRegex(AttachmentError, "отсутствует"):
+            self.service.send(first["conversation_id"], "Next", max_tokens=32)
+        self.assertEqual(len(self.store.messages(first["conversation_id"])), 2)
+
+    def test_image_budget_rejects_before_persistence(self):
+        image = Path(self.temp.name) / "photo.png"
+        image.write_bytes(png_pixel())
+        item = import_image(image, Path(self.temp.name))
+        self.session.snapshot["vision_available"] = True
+        with self.assertRaisesRegex(ValueError, "context"):
+            self.service.send(None, "Look", max_tokens=32, attachments=[item])
+        self.assertEqual(self.store.conversations(), [])
 
 
 if __name__ == "__main__":

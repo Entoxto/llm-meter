@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import base64
 from pathlib import Path
 import tempfile
 import threading
@@ -163,6 +164,26 @@ class SessionTests(unittest.TestCase):
             LaunchConfig(model="C:/a.gguf", executable="C:/server.exe", kv_type="q8_0")
         with self.assertRaises(ValueError):
             LaunchConfig(model="C:/a.gguf", executable="C:/server.exe", reasoning="off")
+        with self.assertRaises(ValueError):
+            LaunchConfig(model="C:/a.gguf", executable="C:/server.exe",
+                         extra_args=("--mmproj", "other.gguf"))
+        with self.assertRaises(ValueError):
+            LaunchConfig(model="tag", backend="ollama", managed=False, mmproj="image.gguf")
+        with self.assertRaises(ValueError):
+            LaunchConfig(model="C:/a.gguf", managed=False, mmproj="image.gguf")
+        self.assertEqual(LaunchConfig.from_dict(self.config.to_dict()).mmproj, "")
+
+    def test_image_chat_requires_confirmed_vision(self):
+        self.start()
+        image = base64.b64encode(b"\x89PNG\r\n\x1a\nunit-test").decode("ascii")
+        messages = [{"role": "user", "content": "hello", "images": [image]}]
+        with self.assertRaisesRegex(ValueError, "not confirmed"):
+            self.session.chat(messages)
+        self.session.client.vision_available = True
+        self.assertTrue(self.session.snapshot["vision_available"])
+        self.assertEqual(self.session.chat(messages)["status"], "complete")
+        with self.assertRaisesRegex(ValueError, "PNG or JPEG"):
+            self.session.chat([{"role": "user", "content": "hello", "images": [base64.b64encode(b"GIF89a").decode()]}])
 
     def test_research_lease_keeps_exclusivity_and_restores_with_new_token(self):
         with self.session.research_operation() as lease:

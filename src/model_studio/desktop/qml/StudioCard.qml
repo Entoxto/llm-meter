@@ -3,5 +3,5 @@ Rectangle {
     color: Theme.panel
     border.color: Theme.border
     border.width: 1
-    radius: 8
+    radius: 6
 }
