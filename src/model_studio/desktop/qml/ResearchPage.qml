@@ -223,9 +223,9 @@ Item {
                             RowLayout { anchors.fill: parent; anchors.margins: 10
                                 Text { text: page.contextLabel(page.v(modelData,"context",null)); color: Theme.text; Layout.preferredWidth: 96 }
                                 Text { text: page.v(modelData,"model_name",""); color: Theme.muted; Layout.fillWidth: true; elide: Text.ElideRight }
-                                Text { text: page.shown(page.v(modelData,"speed",null)," ток/с"); color: Theme.text; Layout.preferredWidth: 128 }
-                                Text { text: page.shown(page.v(modelData,"ttft",null)," с"); color: Theme.muted; Layout.preferredWidth: 72 }
-                                Text { text: page.statusLabel(page.v(modelData,"status","")); color: page.v(modelData,"status","")==="completed" ? Theme.green : Theme.muted }
+                                Text { objectName: "resultSpeed"; text: page.shown(page.v(modelData,"speed",null)," ток/с"); color: Theme.text; Layout.minimumWidth: 112; Layout.maximumWidth: 112; horizontalAlignment: Text.AlignRight; elide: Text.ElideRight }
+                                Text { objectName: "resultTtft"; text: page.shown(page.v(modelData,"ttft",null)," с"); color: Theme.muted; Layout.minimumWidth: 88; Layout.maximumWidth: 88; horizontalAlignment: Text.AlignRight; elide: Text.ElideRight }
+                                Text { objectName: "resultStatus"; text: page.statusLabel(page.v(modelData,"status","")); color: page.v(modelData,"status","")==="completed" ? Theme.green : Theme.muted; Layout.minimumWidth: 84; Layout.maximumWidth: 84; horizontalAlignment: Text.AlignRight; elide: Text.ElideRight }
                             }
                             MouseArea { anchors.fill: parent; onClicked: bridge.selectResult(page.v(modelData,"id","")) }
                         }
