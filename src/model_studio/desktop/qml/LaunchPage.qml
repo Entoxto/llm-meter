@@ -20,6 +20,18 @@ Item {
     function shown(x,s) { return x===undefined || x===null || x==="" ? "—" : (typeof x==="number" && Number.isFinite(x) ? x.toLocaleString(Qt.locale("ru_RU"), "f", s===" с" ? 3 : 2) : String(x))+(s||"") }
     function contextLabel(x) { let n=Number(x); return x===undefined || x===null || x==="" ? "—" : Number.isFinite(n) && n>=1024 ? (n%1024===0 ? n/1024 : Math.round(n/1000))+"K" : String(x) }
     function supports(cap) { return (v(bridge.selectedModel,"capabilities",[]) || []).indexOf(cap)>=0 }
+    readonly property var reasoningOptions: [
+        {text:"Off",mode:"off",budget:0}, {text:"2K",mode:"on",budget:2048},
+        {text:"4K",mode:"on",budget:4096}, {text:"8K",mode:"on",budget:8192},
+        {text:"Auto",mode:"auto",budget:0}, {text:"On · без лимита",mode:"on",budget:0}]
+    function reasoningSupported(option) {
+        return option.mode==="auto" || (supports("reasoning") && (!option.budget ||
+            (supports("reasoning-budget") && v(bridge.selectedModel,"backend","")==="gguf")))
+    }
+    function reasoningIndex() {
+        let budget=Number(v(bridge.draft,"reasoning_budget",0)), mode=v(bridge.draft,"reasoning","auto")
+        return Math.max(0,reasoningOptions.findIndex(function(o) { return o.mode===mode && o.budget===budget }))
+    }
     function startable() { return !!v(bridge.selectedModel,"id","") && !!v(bridge.selectedModel,"available",false) && v(bridge.selectedModel,"testable",true) }
     ScrollView { anchors.fill: parent; clip: true; ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
         ColumnLayout {
@@ -109,8 +121,19 @@ Item {
                     }
                     RowLayout { Layout.fillWidth: true; spacing: 16
                         Text { text: "Рассуждение"; color: Theme.text; font.pixelSize: 14; Layout.preferredWidth: 136 }
-                        ComboBox { objectName: "reasoningSelect"; model: ["Авто","Вкл","Выкл"]; currentIndex: Math.max(0,["auto","on","off"].indexOf(page.v(bridge.draft,"reasoning","auto"))); enabled: page.supports("reasoning"); onActivated: bridge.setDraft("reasoning",["auto","on","off"][index]); Layout.preferredWidth: 176 }
-                        Text { text: page.supports("reasoning") ? "Поддерживается сервером" : "Переключение не подтверждено сервером"; color: Theme.muted; font.pixelSize: 12 }
+                        ComboBox { id: reasoningSelect; objectName: "reasoningSelect"; model: page.reasoningOptions; textRole: "text"; currentIndex: page.reasoningIndex(); Layout.preferredWidth: 176
+                            delegate: ItemDelegate { required property var modelData; required property int index
+                                objectName: "reasoningOption"+index; width: reasoningSelect.width; text: modelData.text
+                                enabled: page.reasoningSupported(modelData); opacity: enabled ? 1 : 0.4
+                                highlighted: reasoningSelect.highlightedIndex===index
+                            }
+                            onActivated: function(index) {
+                                let option=page.reasoningOptions[index]
+                                if (page.reasoningSupported(option)) bridge.setReasoning(option.mode,option.budget)
+                                currentIndex=Qt.binding(function() { return page.reasoningIndex() })
+                            }
+                        }
+                        Text { text: page.supports("reasoning-budget") ? "Бюджет в токенах · Auto — выбор модели" : page.supports("reasoning") ? "Числовой бюджет не поддерживается" : "Доступен только Auto"; color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                     }
                     RowLayout { Layout.fillWidth: true; spacing: 16
                         Text { text: "Ускорение MTP"; color: Theme.text; font.pixelSize: 14; Layout.preferredWidth: 136 }

@@ -10,7 +10,7 @@ from pathlib import Path
 _TITLES = {"speed": "Максимальная скорость", "context": "Максимальный контекст",
            "balanced": "Сбалансированный"}
 _CONFIG_KEYS = ("backend", "model", "context", "host", "executable", "managed",
-                "extra_args", "gpu_layers", "kv_type", "reasoning", "mtp", "draft", "mmproj")
+                "extra_args", "gpu_layers", "kv_type", "reasoning", "reasoning_budget", "mtp", "draft", "mmproj")
 
 
 def _card(key: str, reason: str, row: dict | None = None, current: dict | None = None) -> dict:
@@ -20,7 +20,8 @@ def _card(key: str, reason: str, row: dict | None = None, current: dict | None =
     speed = (row.get("summary") or {}).get("median_tokens_per_second") if row else None
     exact = False
     if current and row and isinstance(requested, dict):
-        exact = all(key in requested and requested[key] == value for key, value in current.items()
+        exact = all((key in requested or (key == "reasoning_budget" and value is None))
+                    and requested.get(key) == value for key, value in current.items()
                     if key in _CONFIG_KEYS)
         exact = exact and any(key in current for key in _CONFIG_KEYS)
     return {"key": key, "title": _TITLES[key], "available": row is not None,

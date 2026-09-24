@@ -32,6 +32,8 @@ def _probe(executable: str, size: int, mtime_ns: int) -> tuple[str, ...]:
     features = []
     if "--reasoning" in options:
         features.append("reasoning")
+        if "--reasoning-budget" in options:
+            features.append("reasoning-budget")
     if {"--cache-type-k", "--cache-type-v"} <= options:
         features.append("kv-cache")
     return tuple(features)

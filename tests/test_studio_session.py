@@ -252,7 +252,34 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(args_seen[args_seen.index("--reasoning") + 1], "off")
         self.assertEqual(args_seen[args_seen.index("--cache-type-k") + 1], "q8_0")
         self.assertEqual(args_seen[args_seen.index("--cache-type-v") + 1], "q8_0")
+        self.assertNotIn("--reasoning-budget", args_seen)
         runtime.stop()
+        args_seen.clear()
+        budget_config = LaunchConfig.from_dict({**config.to_dict(), "reasoning": "on",
+            "reasoning_budget": 4096, "capabilities": ["reasoning", "reasoning-budget", "kv-cache"]})
+        with patch("model_studio.backends.process.OwnedProcess", Process), \
+             patch("model_studio.backends.process.LlamaCppBackend", Backend):
+            runtime.start(budget_config, threading.Event(), lambda *_: None)
+        self.assertEqual(args_seen[args_seen.index("--reasoning") + 1], "on")
+        self.assertEqual(args_seen[args_seen.index("--reasoning-budget") + 1], "4096")
+        runtime.stop()
+
+    def test_reasoning_budget_validation_and_legacy_config(self):
+        base = {"model": "selected.gguf", "executable": "server.exe",
+                "reasoning": "on", "capabilities": ["reasoning", "reasoning-budget"]}
+        self.assertIsNone(LaunchConfig.from_dict(base).reasoning_budget)
+        for budget in (2048, 4096, 8192):
+            config = LaunchConfig(**base, reasoning_budget=budget)
+            self.assertEqual(LaunchConfig.from_dict(config.to_dict()), config)
+        for value in (0, -1, True, 2.5, "2048"):
+            with self.assertRaises(ValueError):
+                LaunchConfig(**base, reasoning_budget=value)
+        for overrides in ({"capabilities": ["reasoning"]}, {"reasoning": "off"},
+                          {"managed": False}, {"backend": "ollama", "managed": False, "executable": ""}):
+            with self.assertRaises(ValueError):
+                LaunchConfig(**{**base, **overrides}, reasoning_budget=2048)
+        with self.assertRaises(ValueError):
+            LaunchConfig(**base, extra_args=("--reasoning-budget=2048",))
 
     def test_effective_context_rounding_boundaries(self):
         managed = LaunchConfig(model="C:/a.gguf", executable="C:/server.exe", context=100000)

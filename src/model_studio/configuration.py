@@ -11,7 +11,7 @@ _CONTROLLED = {
     "-ngl", "--n-gpu-layers", "--gpu-layers", "--host", "--port",
     "-lv", "--log-verbosity", "--cache-type-k", "--cache-type-v",
     "--draft", "--draft-max", "--draft-model", "--spec-type", "--spec-draft-n-max",
-    "-rea", "--reasoning", "-ctk", "-ctv",
+    "-rea", "--reasoning", "--reasoning-budget", "-ctk", "-ctv",
     "--mmproj", "--mmproj-url", "--no-mmproj", "--mmproj-auto",
 }
 
@@ -38,6 +38,7 @@ class LaunchConfig:
     mtp: bool = False
     draft: int = 2
     mmproj: str = ""
+    reasoning_budget: int | None = None
 
     def __post_init__(self):
         if not self.model or not self.model.strip():
@@ -52,6 +53,13 @@ class LaunchConfig:
             raise ValueError("Unsupported KV cache type.")
         if self.reasoning not in ("auto", "on", "off"):
             raise ValueError("Reasoning must be auto, on, or off.")
+        if self.reasoning_budget is not None:
+            if type(self.reasoning_budget) is not int or not 1 <= self.reasoning_budget <= 2_147_483_647:
+                raise ValueError("Reasoning budget must be a positive integer or None.")
+            if self.reasoning == "off":
+                raise ValueError("Reasoning budget cannot be used with reasoning off.")
+            if self.backend != "llama.cpp" or not self.managed or "reasoning-budget" not in self.capabilities:
+                raise ValueError("This runtime does not support a numeric reasoning budget.")
         if type(self.draft) is not int or self.draft < 1:
             raise ValueError("Draft tokens must be positive.")
         if not isinstance(self.mmproj, str):

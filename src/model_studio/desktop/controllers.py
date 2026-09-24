@@ -70,7 +70,7 @@ class Studio(QObject):
         self.core = SessionController(paths["logs"], self._session_event)
         self.chat_service = ChatService(store, self.core, self._session_event)
         self._values = dict(models=[], selectedModel={}, draft={"context": 32768, "mtp": False,
-            "draft": 2, "reasoning": "auto", "kv_type": "f16", "gpu_layers": 99, "vision": False},
+            "draft": 2, "reasoning": "auto", "reasoning_budget": None, "kv_type": "f16", "gpu_layers": 99, "vision": False},
             session=self.core.snapshot, results=[], recommendations=[], telemetry={}, projects=[],
             selectedProject={}, conversations=[], messages=[], research={}, settings={},
             selectedResult={}, matchingResult={}, researchJobs=[], researchResults=[], pendingImages=[], hasMoreResults=False,
@@ -359,7 +359,7 @@ class Studio(QObject):
             model.update(mmproj_path=projector, mmproj_available=bool(projector and Path(projector).is_file()))
         if changed:
             self._values["draft"]["vision"] = False
-            self._values["draft"].update(reasoning="auto", kv_type="f16")
+            self._values["draft"].update(reasoning="auto", reasoning_budget=None, kv_type="f16")
         if model:
             try:
                 profile = self._profile(model)
@@ -429,6 +429,7 @@ class Studio(QObject):
             extra_args=tuple(extra), capabilities=tuple(profile.get("capabilities", [])),
             runtime_name=profile.get("name", "Ollama" if ollama else "llama.cpp"), mtp=bool(draft.get("mtp")) if managed else False,
             draft=int(draft.get("draft", 2)), reasoning=draft.get("reasoning", "auto"),
+            reasoning_budget=draft.get("reasoning_budget"),
             gpu_layers=int(draft.get("gpu_layers", 99)) if managed else 99,
             kv_type=draft.get("kv_type", "f16") if managed else "f16",
             mmproj=model.get("mmproj_path", "") if managed and draft.get("vision") else "")
@@ -470,11 +471,27 @@ class Studio(QObject):
     def setDraft(self, key, value):
         if key in self.draft:
             self._values["draft"][key] = value
+            if key == "reasoning":
+                self._values["draft"]["reasoning_budget"] = None
             self._refresh_recommendations()
             if key == "vision":
                 self._environment = None
                 self._capture_environment()
             self.changed.emit()
+
+    @Slot(str, int)
+    def setReasoning(self, mode, budget):
+        capabilities = self.selectedModel.get("capabilities", [])
+        supported = mode in ("auto", "on", "off") and (mode == "auto" or "reasoning" in capabilities)
+        supported = supported and (budget == 0 or (budget in (2048, 4096, 8192)
+            and mode == "on" and self.selectedModel.get("backend") == "gguf"
+            and "reasoning-budget" in capabilities))
+        if not supported:
+            self._update(error="Этот режим рассуждений не поддерживается выбранным runtime.")
+            return
+        self._values["draft"].update(reasoning=mode, reasoning_budget=budget or None)
+        self._refresh_recommendations()
+        self.changed.emit()
 
     @Slot()
     def startModel(self):
@@ -803,6 +820,7 @@ class Studio(QObject):
         result = next((r for r in self.results if r["id"] == rec["result_id"]), {})
         config = result.get("config", {})
         self._values["draft"].update({k: config[k] for k in self.draft if k in config})
+        self._values["draft"]["reasoning_budget"] = config.get("reasoning_budget")
         self._values["draft"]["vision"] = bool(config.get("mmproj"))
         self._refresh_recommendations()
         self._update(selectedResult=result)

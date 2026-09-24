@@ -163,6 +163,33 @@ class StudioDesktopTests(unittest.TestCase):
         self.workers.complete("settings")
         self.assertEqual(self.store.settings()["model_projectors"][model["path"]], projector["path"])
 
+    def test_budget_is_atomic_guarded_and_cleared_by_legacy_recommendation(self):
+        model = {"id": "gguf", "backend": "gguf", "path": str(self.root / "model.gguf"),
+                 "name": "model", "available": True, "identity_verified": True, "digest": "abc"}
+        exe = str(self.root / "server.exe")
+        self.studio._values.update(models=[model], selectedModel=model, settings={"server_exe": exe},
+            runtimeCapabilities={exe: ["reasoning", "reasoning-budget"]})
+        with patch.object(self.studio, "_capture_environment"):
+            self.studio._select(model)
+        old_config = self.studio._config().to_dict()
+        old_config.pop("reasoning_budget")
+        for budget in (2048, 4096, 8192):
+            self.studio.setReasoning("on", budget)
+            self.assertEqual(self.studio._config().reasoning_budget, budget)
+        self.studio._values.update(results=[{"id": "old", "config": old_config}],
+            recommendations=[{"key": "speed", "available": True, "result_id": "old"}])
+        self.studio.applyRecommendation("speed")
+        self.assertIsNone(self.studio._config().reasoning_budget)
+        self.studio.setReasoning("on", 4096)
+        self.studio.setReasoning("off", 0)
+        self.assertEqual(self.studio._config().reasoning, "off")
+        self.assertIsNone(self.studio._config().reasoning_budget)
+        self.studio.setReasoning("auto", 0)
+        self.studio._values["selectedModel"]["capabilities"] = ["reasoning"]
+        self.studio.setReasoning("on", 2048)
+        self.assertEqual(self.studio.draft["reasoning"], "auto")
+        self.assertIsNone(self.studio.draft["reasoning_budget"])
+
     def test_research_failure_exposes_original_and_restore_errors(self):
         job = {"id": "failed-job", "status": "failed", "error": "context mismatch",
                "restore_error": "server unavailable", "stop_reason": "error"}

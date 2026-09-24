@@ -91,6 +91,8 @@ class ManagedRuntime:
             args += ["--cache-type-k", config.kv_type, "--cache-type-v", config.kv_type]
         if config.reasoning != "auto":
             args += ["--reasoning", config.reasoning]
+        if config.reasoning_budget is not None:
+            args += ["--reasoning-budget", str(config.reasoning_budget)]
         if config.mtp:
             args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(config.draft)]
         if projector:

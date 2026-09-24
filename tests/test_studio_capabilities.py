@@ -16,9 +16,9 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.exe.write_bytes(b"fixture")
 
     def test_exact_flags_cached_until_executable_changes(self):
-        result = Mock(returncode=0, stdout="--reasoning [on|off|auto]\n--cache-type-k TYPE\n--cache-type-v TYPE", stderr="")
+        result = Mock(returncode=0, stdout="--reasoning [on|off|auto]\n--reasoning-budget N\n--cache-type-k TYPE\n--cache-type-v TYPE", stderr="")
         with patch("model_studio.backends.capabilities.subprocess.run", return_value=result) as run:
-            self.assertEqual(runtime_capabilities(str(self.exe)), ["reasoning", "kv-cache"])
+            self.assertEqual(runtime_capabilities(str(self.exe)), ["reasoning", "reasoning-budget", "kv-cache"])
             runtime_capabilities(str(self.exe))
             self.assertEqual(run.call_count, 1)
             self.assertEqual(run.call_args.args[0], [str(self.exe), "--help"])
@@ -36,3 +36,8 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         _probe.cache_clear()
         with patch("model_studio.backends.capabilities.subprocess.run", side_effect=subprocess.TimeoutExpired("server", 5)):
             self.assertEqual(runtime_capabilities(str(self.exe)), [])
+
+    def test_reasoning_without_budget_does_not_enable_numeric_limits(self):
+        result = Mock(returncode=0, stdout="--reasoning [on|off|auto]\n--reasoning-budget-message TEXT", stderr="")
+        with patch("model_studio.backends.capabilities.subprocess.run", return_value=result):
+            self.assertEqual(runtime_capabilities(str(self.exe)), ["reasoning"])
