@@ -4,7 +4,6 @@ import json
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from unittest.mock import patch
 
@@ -125,7 +124,7 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(session.started, [])
         self.assertEqual(self.store.research_jobs(), [])
 
-    def test_long_probe_uses_research_deadline_and_restores_timeout_on_error(self):
+    def test_long_probe_has_no_deadline_and_restores_timeout_on_error(self):
         from model_studio.benchmarks.research import _long_context_probe
         from types import SimpleNamespace
         transport = SimpleNamespace(stream_timeout=300)
@@ -139,9 +138,9 @@ class ResearchTests(unittest.TestCase):
                 raise RuntimeError("probe failed")
         probe = Probe()
         with patch("model_studio.benchmarks.research._token_count", return_value=64000):
-            result = _long_context_probe(probe, "model", 65536, threading.Event(), time.monotonic() + 900)
+            result = _long_context_probe(probe, "model", 65536, threading.Event())
         self.assertFalse(result["validated"])
-        self.assertGreater(probe.observed_timeout, 850)
+        self.assertIsNone(probe.observed_timeout)
         self.assertEqual(transport.stream_timeout, 300)
 
     def setUp(self):
@@ -153,7 +152,7 @@ class ResearchTests(unittest.TestCase):
                                          "digest": "sha256:abc", "identity_verified": True})
         self.config = LaunchConfig(model="tag", backend="ollama", managed=False,
                                    host="http://127.0.0.1:11434", model_id=model["id"])
-        self.plan = {"contexts": [2048, 4096], "max_configs": 2, "budget_minutes": 1,
+        self.plan = {"contexts": [2048, 4096], "max_configs": 2,
                      "runs": 2, "target_context": 4096, "acknowledged_external": True,
                      "environment": {"verified": True, "runtime_build": "v1",
                                      "hardware": "GPU-A", "driver": "D1"}}
@@ -170,6 +169,45 @@ class ResearchTests(unittest.TestCase):
         self.assertFalse(row["long_context"]["validated"])
         self.assertEqual(len(row["runs"]), 2)
         self.assertNotIn("prompt", row)
+
+    def test_unselected_context_is_never_started_including_baseline_and_kv(self):
+        from dataclasses import replace
+        model = self.store.upsert_model({"backend": "gguf", "locator": "test.gguf", "name": "test",
+                                         "digest": "abc", "identity_verified": True})
+        config = LaunchConfig(model="test.gguf", model_id=model["id"], backend="llama.cpp", managed=True,
+                              executable="server.exe", capabilities=("mtp", "kv-cache"), context=131072)
+        plan = {**self.plan, "contexts": [32768, 65536], "target_context": 65536,
+                "max_configs": 12, "memory_economy": True}
+        session = FakeSession()
+        with patch("model_studio.benchmarks.research._long_context_probe", return_value={"validated": False}):
+            job = run_research(session, self.store, config, plan)
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual({c.context for c in session.started}, {32768, 65536})
+        self.assertEqual(job["plan"]["base_config"]["context"], 32768)
+        only = plan_candidates(replace(config, context=32768), {**plan, "contexts": [65536]})
+        self.assertEqual({c["config"].context for c in only}, {65536})
+        with self.assertRaises(ValueError):
+            plan_candidates(config, {**plan, "contexts": []})
+        with self.assertRaises(ValueError):
+            plan_candidates(config, {**plan, "target_context": 131072})
+
+    def test_legacy_time_budget_does_not_stop_new_or_resumed_research(self):
+        # Zero is deliberately already expired under the old contract.
+        legacy_plan = {**self.plan, "budget_minutes": 0}
+        session = FakeSession()
+        session.after_benchmark = session.cancel
+        env = {"backend": "ollama", **self.plan["environment"]}
+        with patch("model_studio.benchmarks.research.environment_snapshot", return_value=env):
+            job = run_research(session, self.store, self.config, legacy_plan)
+            self.assertEqual(len(job["completed_steps"]), 1)
+            self.assertNotIn("budget_minutes", job["plan"])
+            self.store.update_research(job["id"], {"status": "stopped", "stop_reason": "budget_exhausted",
+                                      "plan": {**job["plan"], "budget_minutes": 1}})
+            session.after_benchmark = None
+            resumed = resume_research(session, self.store, job["id"])
+        self.assertEqual(resumed["status"], "completed")
+        self.assertEqual(len(resumed["completed_steps"]), 2)
+        self.assertNotIn("budget_minutes", resumed["plan"])
 
     def test_cancel_after_first_result_keeps_result_and_restores_initial(self):
         original = self.config.to_dict()

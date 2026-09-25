@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+from contextlib import contextmanager
 import ctypes
 import datetime as dt
 import http.client
@@ -35,6 +36,18 @@ class Cancelled(Exception):
     pass
 
 
+@contextmanager
+def without_generation_timeout(client):
+    """Let long measurements finish while preserving socket cancellation."""
+    transport = getattr(client, "client", client)
+    previous = transport.stream_timeout
+    transport.stream_timeout = None
+    try:
+        yield
+    finally:
+        transport.stream_timeout = previous
+
+
 class InterruptibleReader(io.RawIOBase):
     """Retry short socket waits without poisoning a socket.makefile buffer."""
     def __init__(self, sock, stop, cancelled, started, timeout=300):
@@ -51,7 +64,7 @@ class InterruptibleReader(io.RawIOBase):
         while True:
             if self.stop.is_set() or self.cancelled.is_set():
                 raise Cancelled()
-            if time.perf_counter() - self.started > self.timeout:
+            if self.timeout is not None and time.perf_counter() - self.started > self.timeout:
                 raise RuntimeError(f"Запрос превысил лимит {self.timeout:g} секунд.")
             try:
                 return self.sock.recv_into(buffer)

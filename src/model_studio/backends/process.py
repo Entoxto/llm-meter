@@ -52,7 +52,7 @@ class ManagedRuntime:
         except OSError:
             return ""
 
-    def start(self, config: LaunchConfig, stop: threading.Event, emit, timeout: int = 120):
+    def start(self, config: LaunchConfig, stop: threading.Event, emit, timeout: int | None = 120):
         executable = Path(config.executable).resolve()
         model = Path(config.model).resolve()
         if not executable.is_file():
@@ -105,8 +105,8 @@ class ManagedRuntime:
             with self.log_path.open("wb") as log:
                 self.process = OwnedProcess(args, str(executable.parent), log)
             client.client.log_path = str(self.log_path)
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
+            deadline = time.monotonic() + timeout if timeout is not None else None
+            while deadline is None or time.monotonic() < deadline:
                 if stop.is_set():
                     raise Cancelled()
                 if not self.running:

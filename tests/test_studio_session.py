@@ -21,6 +21,7 @@ from model_studio.backends.process import ManagedRuntime
 
 
 class FakeBackend:
+    stream_timeout = 300
     backend = "llama.cpp"
     host = "http://127.0.0.1:8081"
     context = 4096
@@ -124,6 +125,18 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(report["status"], "completed")
         self.assertEqual(len(report["runs"]), 2)
         self.assertEqual(report["config"]["context"], 4096)
+        self.assertEqual(self.session.snapshot["busy"], "idle")
+
+    def test_benchmark_disables_generation_deadline_and_restores_it_on_error(self):
+        self.start()
+        client = self.session.client
+        def failing_measurement(*args, **kwargs):
+            self.assertIsNone(client.stream_timeout)
+            raise RuntimeError("measurement failed")
+        with patch("model_studio.session.run_benchmark", side_effect=failing_measurement):
+            with self.assertRaisesRegex(RuntimeError, "measurement failed"):
+                self.session.benchmark()
+        self.assertEqual(client.stream_timeout, 300)
         self.assertEqual(self.session.snapshot["busy"], "idle")
 
     def test_external_llama_unload_only_disconnects(self):
@@ -300,10 +313,21 @@ class SessionTests(unittest.TestCase):
             "reasoning_budget": 4096, "capabilities": ["reasoning", "reasoning-budget", "kv-cache"]})
         with patch("model_studio.backends.process.OwnedProcess", Process), \
              patch("model_studio.backends.process.LlamaCppBackend", Backend):
-            runtime.start(budget_config, threading.Event(), lambda *_: None)
+            with patch("model_studio.backends.process.time.monotonic", side_effect=AssertionError("No wall clock limit")):
+                runtime.start(budget_config, threading.Event(), lambda *_: None, timeout=None)
         self.assertEqual(args_seen[args_seen.index("--reasoning") + 1], "on")
         self.assertEqual(args_seen[args_seen.index("--reasoning-budget") + 1], "4096")
         runtime.stop()
+        cancel = threading.Event()
+        def still_loading(*args, **kwargs):
+            cancel.set()
+            raise RuntimeError("loading")
+        with patch("model_studio.backends.process.OwnedProcess", Process), \
+             patch("model_studio.backends.process.LlamaCppBackend", Backend), \
+             patch.object(Backend, "request", side_effect=still_loading):
+            with self.assertRaises(Cancelled):
+                runtime.start(config, cancel, lambda *_: None, timeout=None)
+        self.assertFalse(runtime.running)
 
     def test_reasoning_budget_validation_and_legacy_config(self):
         base = {"model": "selected.gguf", "executable": "server.exe",

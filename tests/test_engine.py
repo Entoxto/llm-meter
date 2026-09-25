@@ -14,6 +14,19 @@ from llama_cpp import LlamaCppClient, log_memory
 
 
 class StreamDeadlineTests(unittest.TestCase):
+    def test_unlimited_stream_still_cancels_after_long_elapsed_time(self):
+        from engine import InterruptibleReader
+        sock = Mock()
+        sock.recv_into.return_value = 1
+        stop = threading.Event()
+        reader = InterruptibleReader(sock, stop, threading.Event(), 0, timeout=None)
+        self.addCleanup(reader.close)
+        with patch("engine.time.perf_counter", return_value=172800):
+            self.assertEqual(reader.readinto(bytearray(1)), 1)
+            stop.set()
+            with self.assertRaises(Cancelled):
+                reader.readinto(bytearray(1))
+
     def test_default_and_extended_timeout_keep_cancellation(self):
         from engine import InterruptibleReader
         sock = Mock()

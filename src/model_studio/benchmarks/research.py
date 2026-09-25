@@ -12,11 +12,10 @@ import platform
 import shutil
 import subprocess
 import threading
-import time
 from urllib.parse import urlsplit
 from math import isfinite
 
-from engine import PROMPT
+from engine import PROMPT, without_generation_timeout
 from model_studio.configuration import LaunchConfig, effective_context_matches, projector_identity
 
 
@@ -31,34 +30,35 @@ def _emit(emit, event: str, payload: dict) -> None:
         emit(event, payload)
 
 
-def _validate_plan(config: LaunchConfig, plan: dict) -> tuple[list[int], int, int, int]:
+def _validate_plan(config: LaunchConfig, plan: dict) -> tuple[list[int], int, int]:
     contexts = plan.get("contexts")
     if not isinstance(contexts, list) or not contexts or any(type(c) is not int or c < 256 for c in contexts):
         raise ValueError("plan.contexts must be a nonempty list of contexts >=256")
     contexts = list(dict.fromkeys(contexts))
     max_configs = plan.get("max_configs", 12)
-    minutes = plan.get("budget_minutes")
     runs = plan.get("runs", 3)
     target = plan.get("target_context", max(contexts))
     if type(max_configs) is not int or not 1 <= max_configs <= 12:
         raise ValueError("max_configs must be between 1 and 12")
-    if type(minutes) is not int or not 1 <= minutes <= 1440:
-        raise ValueError("budget_minutes must be between 1 and 1440")
     if type(runs) is not int or not 1 <= runs <= 10:
         raise ValueError("runs must be between 1 and 10")
     if type(target) is not int or target < 256:
         raise ValueError("target_context must be >=256")
+    if target not in contexts:
+        raise ValueError("Целевой контекст должен быть выбран для исследования")
     if not plan.get("acknowledged_external", False):
         raise ValueError("External clients can compete with research; acknowledge them before starting")
     if config.mtp and "mtp" not in config.capabilities:
         raise ValueError("MTP is not a verified runtime capability")
-    return contexts[:max_configs], minutes, runs, target
+    return contexts, runs, target
 
 
 def plan_candidates(config, plan: dict) -> list[dict]:
     """Plan a small ordered sequence, never a context × feature product."""
     config = config if isinstance(config, LaunchConfig) else LaunchConfig.from_dict(config)
-    contexts, _, _, target = _validate_plan(config, plan)
+    contexts, _, target = _validate_plan(config, plan)
+    if config.context not in contexts:
+        config = replace(config, context=min(contexts))
     cap = plan.get("max_configs", 12)
     candidates = [{"key": "baseline", "stage": "baseline", "config": config}]
     managed_llama = config.backend == "llama.cpp" and config.managed
@@ -360,8 +360,7 @@ def _token_count(client, content: str, timeout: float) -> int | None:
     return count if type(count) is int and count >= 0 else None
 
 
-def _long_context_probe(client, model: str, context: int, stop: threading.Event,
-                        deadline: float) -> dict:
+def _long_context_probe(client, model: str, context: int, stop: threading.Event) -> dict:
     """Require tokenized long input, observed processing, output and exact context."""
     if getattr(client, "backend", None) != "llama.cpp":
         return {"validated": False, "reason": "Runtime tokenization proof unavailable"}
@@ -373,10 +372,10 @@ def _long_context_probe(client, model: str, context: int, stop: threading.Event,
     repeats = max(1, target // 15)
     try:
         for _ in range(8):
-            if stop.is_set() or time.monotonic() >= deadline:
+            if stop.is_set():
                 raise InterruptedError("Long-context probe cancelled")
             prompt = phrase * repeats + "\nПродолжите одним техническим предложением."
-            count = _token_count(client, prompt, max(.1, min(30, deadline - time.monotonic())))
+            count = _token_count(client, prompt, 30)
             if count is None or count <= 0:
                 return {"validated": False, "reason": "Tokenizer did not return token count"}
             if int(target * .95) <= count <= context - reserve - 16:
@@ -384,17 +383,10 @@ def _long_context_probe(client, model: str, context: int, stop: threading.Event,
             repeats = max(1, int(repeats * target / count * .98))
         else:
             return {"validated": False, "reason": "Could not size long input safely"}
-        if stop.is_set() or time.monotonic() >= deadline:
+        if stop.is_set():
             raise InterruptedError("Long-context probe cancelled")
-        transport = getattr(client, "client", client)
-        previous_timeout = getattr(transport, "stream_timeout", 300)
-        try:
-            # Long prompt processing uses the user's research deadline, not the
-            # ordinary five-minute limit. The research watcher still cancels it.
-            transport.stream_timeout = max(.1, deadline - time.monotonic())
+        with without_generation_timeout(client):
             measured = client.generate(model, prompt, reserve, stop)
-        finally:
-            transport.stream_timeout = previous_timeout
         reported = measured.get("prompt_tokens")
         processed = measured.get("prompt_processed_tokens")
         cached = measured.get("prompt_cached_tokens")
@@ -424,7 +416,10 @@ def run_research(session, store, config, plan: dict, emit=None,
     """Run a bounded baseline, feature, context and optional KV sequence."""
     config = config if isinstance(config, LaunchConfig) else LaunchConfig.from_dict(config)
     plan = dict(plan)
-    contexts, minutes, runs, target = _validate_plan(config, plan)
+    plan.pop("budget_minutes", None)  # Old stopped jobs resume without their time limit.
+    contexts, runs, target = _validate_plan(config, plan)
+    if config.context not in contexts:
+        config = replace(config, context=min(contexts))
     _emit(emit, "progress", {"message": "Проверка файла модели перед исследованием…"})
     config = verify_benchmark_model(store, config, cancel)
     verified_artifact = _artifact(store, config)
@@ -434,7 +429,6 @@ def run_research(session, store, config, plan: dict, emit=None,
     candidates = plan_candidates(config, plan)
     resume_id = plan.pop("resume_job_id", None)
     initial = session.snapshot
-    deadline = time.monotonic() + minutes * 60
     if resume_id:
         job = next((j for j in store.research_jobs() if j["id"] == resume_id), None)
         if job is None:
@@ -457,9 +451,10 @@ def run_research(session, store, config, plan: dict, emit=None,
                 ("backend", "runtime_build", "hardware", "driver", "projector_digest"))):
             raise ValueError("Runtime or hardware changed; start a new research job")
         plan = {**saved_plan, **plan}
+        plan.pop("budget_minutes", None)
         candidates = plan_candidates(config, plan)
         job = store.update_research(job["id"], {"status": "running", "stop_reason": None,
-                                                   "restore_error": None, "error": None})
+                                                   "restore_error": None, "error": None, "plan": plan})
     else:
         baseline_env = environment_snapshot(config, session.client)
         job = store.create_research({**plan, "base_config": config.to_dict(),
@@ -488,10 +483,6 @@ def run_research(session, store, config, plan: dict, emit=None,
                     end_reason = "cancelled"
                     session.cancel()
                     return
-                if time.monotonic() >= deadline:
-                    end_reason = "budget_exhausted"
-                    session.cancel()
-                    return
                 stop_watch.wait(.05)
         watcher = threading.Thread(target=watch_cancel, daemon=True)
         watcher.start()
@@ -505,8 +496,8 @@ def run_research(session, store, config, plan: dict, emit=None,
                 key, stage = descriptor["key"], descriptor["stage"]
                 if key in completed:
                     continue
-                if (cancel is not None and cancel.is_set()) or lease.cancel_event.is_set() or time.monotonic() >= deadline:
-                    end_reason = end_reason or ("budget_exhausted" if time.monotonic() >= deadline else "cancelled")
+                if (cancel is not None and cancel.is_set()) or lease.cancel_event.is_set():
+                    end_reason = end_reason or "cancelled"
                     break
                 if len(attempted_keys) >= plan.get("max_configs", 12):
                     end_reason = "configuration_limit"
@@ -534,9 +525,9 @@ def run_research(session, store, config, plan: dict, emit=None,
                                   not any(c["stage"] == "context" for c in candidates))
                     if needs_long and proof_key in long_proofs:
                         long_context = long_proofs[proof_key]
-                    elif needs_long and not lease.cancel_event.is_set() and time.monotonic() < deadline:
+                    elif needs_long and not lease.cancel_event.is_set():
                         long_context = _long_context_probe(lease.client, lease.model_id,
-                                                           candidate.context, lease.cancel_event, deadline)
+                                                           candidate.context, lease.cancel_event)
                         long_proofs[proof_key] = long_context
                     else:
                         long_context = {"validated": False, "reason": "Long input is tested on context candidates"}
@@ -580,7 +571,7 @@ def run_research(session, store, config, plan: dict, emit=None,
                         end_reason = "measurement_failed"
                         break
                 except InterruptedError:
-                    end_reason = end_reason or ("budget_exhausted" if time.monotonic() >= deadline else "cancelled")
+                    end_reason = end_reason or "cancelled"
                     break
                 except Exception as exc:
                     if stage == "kv" and not lease.cancel_event.is_set():

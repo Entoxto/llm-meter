@@ -9,8 +9,9 @@ Item {
     property var bridge
     property var host
     property string mode: "quick"
-    property int maxContext: 131072
-    property int budgetMinutes: 30
+    property var contextChoices: [{value:32768,label:"32K"},{value:65536,label:"64K"},{value:98304,label:"96K"},{value:102400,label:"100K"},{value:131072,label:"128K"}]
+    property var selectedContexts: [32768,65536,98304,102400,131072]
+    property int customContext: 163840
     property bool memoryEconomy: true
     property bool acknowledge: false
     property string contextFilter: ""
@@ -39,6 +40,19 @@ Item {
     function v(o,k,d) { let x=o && o[k]; return x===undefined || x===null || x==="" ? d : x }
     function shown(x,s) { if(x===undefined || x===null || x==="") return "Нет данных"; return (typeof x==="number" && Number.isFinite(x) ? x.toLocaleString(Qt.locale("ru_RU"), "f", s===" с" ? 3 : 2) : String(x))+(s||"") }
     function contextLabel(x) { let n=Number(x); return x===undefined || x===null || x==="" ? "Нет данных" : Number.isFinite(n) && n>=1024 ? (n%1024===0 ? n/1024 : Math.round(n/1000))+"K" : String(x) }
+    function toggleContext(value, checked) {
+        let contexts=selectedContexts.slice()
+        let index=contexts.indexOf(value)
+        if (checked && index<0) contexts.push(value)
+        if (!checked && index>=0) contexts.splice(index,1)
+        selectedContexts=contexts.sort(function(a,b) { return a-b })
+    }
+    function addContext() {
+        let value=customContext
+        if (contextChoices.some(function(c) { return c.value===value })) return
+        contextChoices=contextChoices.concat([{value:value,label:contextLabel(value)}]).sort(function(a,b) { return a.value-b.value })
+        toggleContext(value,true)
+    }
     function canCompareMemory() { return v(bridge.selectedModel,"backend","")==="gguf" && (v(bridge.selectedModel,"capabilities",[]) || []).indexOf("kv-cache")>=0 }
     function modeDetails(config) {
         if (!config) return ""
@@ -121,7 +135,7 @@ Item {
                     }
                 }
             }
-            RowLayout { visible: page.mode==="setup" && !page.progressing; Layout.fillWidth: true; Layout.preferredHeight: 490; spacing: 12
+            RowLayout { visible: page.mode==="setup" && !page.progressing; Layout.fillWidth: true; Layout.preferredHeight: 460; spacing: 12
                 StudioCard { Layout.minimumWidth: Math.max(320,(page.width-61)/2); Layout.maximumWidth: Math.max(320,(page.width-61)/2); Layout.fillHeight: true
                     ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 15
                         Text { text: "Найти удобные режимы для этого компьютера"; color: Theme.text; font.pixelSize: 20; font.bold: true; wrapMode: Text.WordWrap; Layout.fillWidth: true }
@@ -138,20 +152,24 @@ Item {
                     }
                 }
                 ColumnLayout { Layout.minimumWidth: Math.max(320,(page.width-61)/2); Layout.maximumWidth: Math.max(320,(page.width-61)/2); Layout.fillHeight: true; spacing: 10
-                    StudioCard { Layout.fillWidth: true; Layout.preferredHeight: 224
-                        ColumnLayout { anchors.fill: parent; anchors.margins: 14; spacing: 10
+                    StudioCard { Layout.fillWidth: true; Layout.preferredHeight: setupBounds.implicitHeight + 28
+                        ColumnLayout { id: setupBounds; anchors.fill: parent; anchors.margins: 14; spacing: 10
                             Text { text: "Границы исследования"; color: Theme.text; font.pixelSize: 18; font.bold: true }
-                            RowLayout { Layout.fillWidth: true
-                                Text { text: "Максимальный контекст"; color: Theme.muted; Layout.fillWidth: true }
-                                SpinBox { from: 8192; to: 1048576; stepSize: 8192; editable: true; value: page.maxContext; onValueModified: page.maxContext=value }
+                            Text { text: "Контексты для проверки"; color: Theme.muted; font.pixelSize: 13 }
+                            Flow { Layout.fillWidth: true; Layout.preferredHeight: childrenRect.height; spacing: 2
+                                Repeater { model: page.contextChoices
+                                    CheckBox { required property var modelData; text: modelData.label; checked: page.selectedContexts.indexOf(modelData.value)>=0; onToggled: page.toggleContext(modelData.value,checked) }
+                                }
                             }
-                            RowLayout { Layout.fillWidth: true
-                                Text { text: "Бюджет времени, мин"; color: Theme.muted; Layout.fillWidth: true }
-                                SpinBox { from: 5; to: 240; value: page.budgetMinutes; onValueModified: page.budgetMinutes=value }
+                            RowLayout { Layout.fillWidth: true; spacing: 8
+                                Text { text: "Свой контекст"; color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true }
+                                SpinBox { from: 1024; to: 1048576; stepSize: 1024; editable: true; value: page.customContext; onValueModified: page.customContext=value; Layout.preferredWidth: 132 }
+                                StudioButton { text: "Добавить"; buttonHeight: 28; enabled: !page.contextChoices.some(function(c) { return c.value===page.customContext }); onClicked: page.addContext() }
                             }
+                            Text { text: "Проверяем только отмеченные контексты."; color: Theme.muted; font.pixelSize: 12 }
                             CheckBox { text: "Сравнить память контекста: F16 / Q8 / Q4"; checked: page.memoryEconomy; enabled: page.canCompareMemory(); onToggled: page.memoryEconomy=checked }
-                            Text { text: "Сравним исходный и максимальный контекст. Качество ответов не оцениваем: сжатие может на него влиять."; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true; visible: page.canCompareMemory() }
-                            Text { text: "Проверяются только поддерживаемые параметры."; color: Theme.muted; font.pixelSize: 12 }
+                            Text { text: "Сравним типы памяти на базовом и максимальном выбранном контексте. Качество ответов не оцениваем."; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true; visible: page.canCompareMemory() }
+                            Text { text: "Без ограничения времени. Можно остановить вручную; готовые замеры сохраняются."; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         }
                     }
                     StudioCard { Layout.fillWidth: true; Layout.preferredHeight: 112; color: "#1b2144"; border.color: Theme.violet
@@ -161,7 +179,7 @@ Item {
                             CheckBox { text: "Понимаю влияние на внешние приложения"; checked: page.acknowledge; onToggled: page.acknowledge=checked }
                         }
                     }
-                    StudioButton { text: "Начать исследование"; iconName: "player-play"; primary: true; Layout.fillWidth: true; enabled: page.acknowledge && !!page.v(bridge.selectedModel,"id","") && page.v(bridge.selectedModel,"testable",true) && !bridge.busy; onClicked: { bridge.runResearch({max_context:page.maxContext,budget_minutes:page.budgetMinutes,memory_economy:page.memoryEconomy && page.canCompareMemory(),external_use_acknowledged:true}); if (bridge.busy) page.mode="progress" } }
+                    StudioButton { text: "Начать исследование"; iconName: "player-play"; primary: true; Layout.fillWidth: true; enabled: page.selectedContexts.length>0 && page.acknowledge && !!page.v(bridge.selectedModel,"id","") && page.v(bridge.selectedModel,"testable",true) && !bridge.busy; onClicked: { bridge.runResearch({contexts:page.selectedContexts,target_context:Math.max.apply(Math,page.selectedContexts),memory_economy:page.memoryEconomy && page.canCompareMemory(),external_use_acknowledged:true}); if (bridge.busy) page.mode="progress" } }
                     StudioButton { text: "Вернуться к запуску"; iconName: "arrow-left"; Layout.fillWidth: true; onClicked: host.navigate(0) }
                     Item { Layout.fillHeight: true }
                 }

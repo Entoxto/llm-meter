@@ -5,12 +5,12 @@ IDs so delayed UI delivery cannot overwrite a newer session.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 import threading
 import uuid
 
-from engine import Cancelled, run_benchmark, selected_resident
+from engine import Cancelled, run_benchmark, selected_resident, without_generation_timeout
 from model_studio.backends.llama_cpp import LlamaCppBackend
 from model_studio.backends.ollama import OllamaBackend
 from model_studio.backends.images import image_mime
@@ -152,11 +152,13 @@ class SessionController:
                 client = OllamaBackend(config.host, config.context)
                 client.client.reasoning = config.reasoning
                 client.prepare(config.model)
-                client.preload(config.model, stop)
+                with without_generation_timeout(client) if self._nested_research() else nullcontext():
+                    client.preload(config.model, stop)
                 model_id = config.model
             elif config.managed:
                 owned = ManagedRuntime(self.logs_dir)
-                client, model_id = owned.start(config, stop, self._publish)
+                client, model_id = owned.start(config, stop, self._publish,
+                                               timeout=None if self._nested_research() else 120)
             else:
                 client = LlamaCppBackend(config.host, config.context)
                 model_id = config.model
@@ -441,7 +443,8 @@ class SessionController:
                 else:
                     self._publish(event, payload if isinstance(payload, dict) else {"message": str(payload)})
 
-            result = run_benchmark(client, model_id, relay, stop, None, runs=runs, tokens=tokens)
+            with without_generation_timeout(client):
+                result = run_benchmark(client, model_id, relay, stop, None, runs=runs, tokens=tokens)
             result.update(session_id=session_id, operation_id=operation,
                           config=config.to_dict(), model_id=config.model_id or None,
                           runtime_model_id=model_id, method="legacy-short-v2")
