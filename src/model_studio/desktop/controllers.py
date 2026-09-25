@@ -805,7 +805,7 @@ class Studio(QObject):
         plan = dict(plan)
         maximum = int(plan.get("max_context", 131072))
         plan.setdefault("contexts", sorted({maximum, *(c for c in (32768, 65536, 98304, 102400, 131072) if c <= maximum)}))
-        plan.setdefault("max_configs", 8)
+        plan.setdefault("max_configs", 12 if plan.get("memory_economy") else 8)
         plan.setdefault("acknowledged_external", plan.get("external_use_acknowledged", False))
         plan.update(identity_verified=self.selectedModel.get("identity_verified", False), artifact_digest=self.selectedModel.get("digest"))
         self._research_cancel = threading.Event()

@@ -29,6 +29,7 @@ def _card(key: str, reason: str, row: dict | None = None, current: dict | None =
     requested = row.get("config") or config if row else {}
     actual_context = config.get("context") if isinstance(config, dict) else None
     speed = (row.get("summary") or {}).get("median_tokens_per_second") if row else None
+    controlled_runtime = config.get("backend") == "llama.cpp" and config.get("managed") is True
     exact = False
     if current and row and isinstance(requested, dict):
         exact = all((key in requested or (key == "reasoning_budget" and value is None))
@@ -37,6 +38,9 @@ def _card(key: str, reason: str, row: dict | None = None, current: dict | None =
         exact = exact and any(key in current for key in _CONFIG_KEYS)
     return {"key": key, "title": _TITLES[key], "available": row is not None,
             "reason": reason, "context": actual_context, "speed": speed,
+            "mtp": config.get("mtp") if controlled_runtime else None,
+            "draft": config.get("draft") if controlled_runtime else None,
+            "kv_type": config.get("kv_type") if controlled_runtime else None,
             "result_id": row.get("id") if row else None, "exact_current": exact}
 
 

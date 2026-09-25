@@ -19,6 +19,21 @@ Item {
     function v(o,k,d) { let x=o && o[k]; return x===undefined || x===null || x==="" ? d : x }
     function shown(x,s) { return x===undefined || x===null || x==="" ? "—" : (typeof x==="number" && Number.isFinite(x) ? x.toLocaleString(Qt.locale("ru_RU"), "f", s===" с" ? 3 : 2) : String(x))+(s||"") }
     function contextLabel(x) { let n=Number(x); return x===undefined || x===null || x==="" ? "—" : Number.isFinite(n) && n>=1024 ? (n%1024===0 ? n/1024 : Math.round(n/1000))+"K" : String(x) }
+    function modeDetails(rec) {
+        if (!rec || !rec.available) return ""
+        let parts=[]
+        if (rec.mtp===true || rec.mtp===false) parts.push("MTP " + (rec.mtp ? "вкл." : "выкл."))
+        if (rec.mtp===true && rec.draft!==undefined && rec.draft!==null && rec.draft!=="") parts.push("Draft " + rec.draft)
+        if (rec.kv_type) parts.push("Память " + ({f16:"F16",q8_0:"Q8",q4_0:"Q4"}[String(rec.kv_type).toLowerCase()] || String(rec.kv_type).toUpperCase()))
+        return parts.join("  •  ")
+    }
+    function unavailableNote(rec) {
+        let reason=String(v(rec,"reason","")).toLowerCase()
+        if (reason.indexOf("после проверки")>=0 || reason.indexOf("до проверки файла")>=0) return "Нужен новый тест после проверки модели."
+        if (reason.indexOf("длинн")>=0 || reason.indexOf("целевого контекста")>=0) return "Длинный контекст ещё не подтверждён."
+        if (reason.indexOf("ещё не проверена")>=0 || reason.indexOf("еще не проверена")>=0) return "Среда ещё проверяется."
+        return "Нужен подходящий проверенный замер."
+    }
     function supports(cap) { return (v(bridge.selectedModel,"capabilities",[]) || []).indexOf(cap)>=0 }
     readonly property var reasoningOptions: [
         {text:"Off",mode:"off",budget:0}, {text:"2K",mode:"on",budget:2048},
@@ -72,25 +87,28 @@ Item {
                                 for(let i=0;i<a.length;i++) if(a[i].key===modelData) return a[i]
                                 return null
                             }
-                            Layout.fillWidth: true; Layout.preferredHeight: 139
+                            Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredHeight: Math.max(150, modeContent.implicitHeight + 28)
                             color: page.selectedMode===modelData ? "#202648" : Theme.panel
                             border.color: page.selectedMode===modelData ? Theme.violet : Theme.border
                             opacity: rec && rec.available ? 1 : 0.78
-                            Column { anchors.fill: parent; anchors.margins: 16; spacing: 10
-                                Row { spacing: 9
+                            ColumnLayout { id: modeContent; anchors.fill: parent; anchors.margins: 14; spacing: 7
+                                RowLayout { Layout.fillWidth: true; spacing: 8
                                     Rectangle { width: 18; height: 18; radius: 9; color: "transparent"; border.color: page.selectedMode===modelData ? Theme.violet : Theme.muted; border.width: 2
                                         Rectangle { anchors.centerIn: parent; width: 8; height: 8; radius: 4; color: Theme.violet; visible: page.selectedMode===modelData }
                                     }
-                                    Text { text: rec ? page.v(rec,"title",["Максимальная скорость","Сбалансированный","Максимальный контекст"][index]) : ["Максимальная скорость","Сбалансированный","Максимальный контекст"][index]; color: Theme.text; font.pixelSize: 14; font.bold: true }
+                                    Text { text: rec ? page.v(rec,"title",["Максимальная скорость","Сбалансированный","Максимальный контекст"][index]) : ["Максимальная скорость","Сбалансированный","Максимальный контекст"][index]; color: Theme.text; font.pixelSize: 14; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
                                 }
-                                Row { spacing: 22
-                                    Column { spacing: 5; Text { text: "Контекст"; color: Theme.muted; font.pixelSize: 12 } Text { text: page.contextLabel(rec && rec.available ? rec.context : null); color: Theme.text; font.pixelSize: 22; font.bold: true } }
-                                    Column { spacing: 5; Text { text: "Скорость генерации"; color: Theme.muted; font.pixelSize: 12 } Text { text: page.shown(rec && rec.available ? rec.speed : null," ток/с"); color: Theme.text; font.pixelSize: 22; font.bold: true } }
+                                RowLayout { visible: !!rec && !!rec.available; Layout.fillWidth: true; spacing: 16
+                                    ColumnLayout { spacing: 3; Text { text: "Контекст"; color: Theme.muted; font.pixelSize: 12 } Text { text: page.contextLabel(rec ? rec.context : null); color: Theme.text; font.pixelSize: 21; font.bold: true } }
+                                    ColumnLayout { spacing: 3; Text { text: "Скорость"; color: Theme.muted; font.pixelSize: 12 } Text { text: page.shown(rec ? rec.speed : null," ток/с"); color: Theme.text; font.pixelSize: 21; font.bold: true } }
                                 }
-                                Text { text: rec && rec.available ? "По сохранённым тестам" : page.v(rec,"reason","Выберите модель и дождитесь проверки результатов."); color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width; maximumLineCount: 2; elide: Text.ElideRight
+                                Text { visible: !!rec && !rec.available; text: "Нет проверенного режима"; color: Theme.muted; font.pixelSize: 15; Layout.fillWidth: true }
+                                Text { visible: !!rec && !!rec.available && !!page.modeDetails(rec); text: page.modeDetails(rec); color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
+                                Item { Layout.fillHeight: true }
+                                Text { text: rec && rec.available ? "По сохранённым тестам" : page.unavailableNote(rec); color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
                                     HoverHandler { id: recommendationReasonHover }
-                                    ToolTip.visible: recommendationReasonHover.hovered && truncated
-                                    ToolTip.text: text
+                                    ToolTip.visible: recommendationReasonHover.hovered && !!rec && !rec.available
+                                    ToolTip.text: page.v(rec,"reason","Пока нет подходящих результатов исследования.")
                                 }
                             }
                             MouseArea { anchors.fill: parent; enabled: !!rec && !!rec.available; onClicked: { page.selectedMode=modelData; bridge.applyRecommendation(modelData) } }
@@ -180,39 +198,38 @@ Item {
                 StudioButton { text: "Выгрузить"; iconName: "download"; Layout.preferredWidth: 192; enabled: host.running(); onClicked: unloadDialog.open() }
             }
             RowLayout { visible: !page.manual; Layout.fillWidth: true; Layout.topMargin: 10; spacing: 12
-                StudioCard { Layout.fillWidth: true; Layout.preferredHeight: 280
-                    ColumnLayout { anchors.fill: parent; anchors.margins: 16; spacing: 10
+                StudioCard { Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredHeight: Math.max(280, currentContent.implicitHeight + 32)
+                    ColumnLayout { id: currentContent; anchors.fill: parent; anchors.margins: 16; spacing: 10
                         Text { text: host.running() ? "Сейчас" : "Проверено на этом компьютере"; color: Theme.text; font.pixelSize: 18; font.bold: true }
-                        Text { text: host.running() ? "Текущие показатели модели и компьютера." : "Результаты подходящего сохранённого теста."; color: Theme.muted; font.pixelSize: 13 }
-                        StudioCard { Layout.fillWidth: true; Layout.fillHeight: true; color: Theme.panel2
-                            ColumnLayout { anchors.fill: parent; anchors.margins: 15; spacing: 8
-                                Text { text: host.running() ? host.modelName() : page.v(bridge.matchingResult,"model_name",page.v(bridge.selectedModel,"name","Нет данных")); color: Theme.text; font.pixelSize: 15; font.bold: true }
-                                RowLayout { Layout.fillWidth: true; spacing: 14
-                                    Column { spacing: 4; Text { text: host.running() ? "Видеопамять всей GPU" : "Скорость генерации"; color: Theme.muted } Text { text: host.running() ? page.shown(page.v(bridge.telemetry,"gpu_used_gb",null)," ГБ") + " / " + page.shown(page.v(bridge.telemetry,"gpu_total_gb",null)," ГБ") : page.shown(page.v(bridge.matchingResult,"speed",null)," ток/с"); color: Theme.text; font.pixelSize: 20; font.bold: true } }
-                                    Column { spacing: 4; Text { text: host.running() ? "Загрузка GPU" : "Первый токен"; color: Theme.muted } Text { text: host.running() ? page.shown(page.v(bridge.telemetry,"gpu_utilization",null),"%") : page.shown(page.v(bridge.matchingResult,"ttft",null)," с"); color: Theme.text; font.pixelSize: 20; font.bold: true } }
-                                }
-                                RowLayout { visible: !host.running() && !!page.v(bridge.matchingResult,"id",""); Layout.fillWidth: true; spacing: 14
-                                    Column { spacing: 4; Text { text: "Обработка входа"; color: Theme.muted; font.pixelSize: 12 } Text { text: page.shown(page.v(bridge.matchingResult,"prompt_speed",null)," ток/с"); color: Theme.text; font.pixelSize: 17; font.bold: true } }
-                                    Column { spacing: 4; Text { text: "Пик VRAM видеокарты"; color: Theme.muted; font.pixelSize: 12 } Text { text: page.shown(page.v(bridge.matchingResult,"vram_gb",null)," ГБ"); color: Theme.text; font.pixelSize: 17; font.bold: true } }
-                                }
-                                RowLayout { visible: host.running(); Layout.fillWidth: true; spacing: 14
-                                    Column { spacing: 4
-                                        Text { text: "RAM системы"; color: Theme.muted; font.pixelSize: 12 }
-                                        Text { text: page.shown(page.v(bridge.telemetry,"ram_used_gb",null)," ГБ") + " / " + page.shown(page.v(bridge.telemetry,"ram_total_gb",null)," ГБ"); color: Theme.text; font.pixelSize: 14; font.bold: true }
+                        StudioCard { Layout.fillWidth: true; Layout.preferredHeight: currentDetails.implicitHeight + 26; color: Theme.panel2
+                            ColumnLayout { id: currentDetails; anchors.fill: parent; anchors.margins: 13; spacing: 7
+                                Text { text: host.running() ? host.modelName() : page.v(bridge.matchingResult,"model_name",page.v(bridge.selectedModel,"name","Нет данных")); color: Theme.text; font.pixelSize: 15; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
+                                Text { visible: host.running(); text: "Вся система"; color: Theme.muted; font.pixelSize: 12; font.bold: true }
+                                RowLayout { Layout.fillWidth: true; spacing: 16
+                                    ColumnLayout { Layout.fillWidth: true; spacing: 2
+                                        Text { text: host.running() ? "GPU · занято / всего" : "Скорость генерации"; color: Theme.muted; font.pixelSize: 12 }
+                                        Text { text: host.running() ? page.shown(page.v(bridge.telemetry,"gpu_used_gb",null)," ГБ") + " / " + page.shown(page.v(bridge.telemetry,"gpu_total_gb",null)," ГБ") : page.shown(page.v(bridge.matchingResult,"speed",null)," ток/с"); color: Theme.text; font.pixelSize: 16; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
                                     }
-                                    Column { spacing: 4
-                                        Text { text: "Буферы модели"; color: Theme.muted; font.pixelSize: 12 }
-                                        Text { text: "GPU " + page.shown(page.v(bridge.telemetry,"model_vram_gb",null)," ГБ") + "  •  RAM " + page.shown(page.v(bridge.telemetry,"model_ram_gb",null)," ГБ"); color: Theme.text; font.pixelSize: 14; font.bold: true }
+                                    ColumnLayout { Layout.fillWidth: true; spacing: 2
+                                        Text { text: host.running() ? "RAM · занято / всего" : "Первый токен"; color: Theme.muted; font.pixelSize: 12 }
+                                        Text { text: host.running() ? page.shown(page.v(bridge.telemetry,"ram_used_gb",null)," ГБ") + " / " + page.shown(page.v(bridge.telemetry,"ram_total_gb",null)," ГБ") : page.shown(page.v(bridge.matchingResult,"ttft",null)," с"); color: Theme.text; font.pixelSize: 16; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
                                     }
                                 }
-                                Text { visible: host.running(); text: "Offload: " + page.shown(page.v(bridge.telemetry,"offload",null)) + "  •  Источник: " + page.shown(page.v(bridge.telemetry,"model_memory_source",null)); color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                                Text { text: host.running() ? "Историческая скорость доступна в результатах исследования." : page.v(bridge.matchingResult,"id","") ? "Подходящий сохранённый тест. Подробности доступны в истории." : "Эта конфигурация ещё не тестировалась."; color: Theme.muted; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                                Text { visible: host.running(); text: "Память модели · буферы"; color: Theme.muted; font.pixelSize: 12; font.bold: true }
+                                Text { visible: host.running(); text: "GPU " + page.shown(page.v(bridge.telemetry,"model_vram_gb",null)," ГБ") + "  •  RAM " + page.shown(page.v(bridge.telemetry,"model_ram_gb",null)," ГБ"); color: Theme.text; font.pixelSize: 14; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight
+                                    HoverHandler { id: memorySourceHover }
+                                    ToolTip.visible: memorySourceHover.hovered && !!page.v(bridge.telemetry,"model_memory_source","")
+                                    ToolTip.text: "Источник: " + page.v(bridge.telemetry,"model_memory_source","")
+                                }
+                                Text { visible: host.running(); text: "Загрузка GPU " + page.shown(page.v(bridge.telemetry,"gpu_utilization",null),"%") + "  •  Размещение: " + page.shown(page.v(bridge.telemetry,"offload",null)); color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
+                                Text { visible: !host.running() && !!page.v(bridge.matchingResult,"id",""); text: "Обработка входа " + page.shown(page.v(bridge.matchingResult,"prompt_speed",null)," ток/с") + "  •  Пик VRAM " + page.shown(page.v(bridge.matchingResult,"vram_gb",null)," ГБ"); color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
+                                Text { text: host.running() ? "Скорость предыдущих тестов — в истории исследований." : page.v(bridge.matchingResult,"id","") ? "Подробности теста — в истории." : "Эта конфигурация ещё не тестировалась."; color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                             }
                         }
                     }
                 }
-                StudioCard { Layout.fillWidth: true; Layout.preferredHeight: 280
-                    ColumnLayout { anchors.fill: parent; anchors.margins: 16; spacing: 10
+                StudioCard { Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredHeight: Math.max(280, workContent.implicitHeight + 32)
+                    ColumnLayout { id: workContent; anchors.fill: parent; anchors.margins: 16; spacing: 10
                         Text { text: "Работа с моделью"; color: Theme.text; font.pixelSize: 18; font.bold: true }
                         Text { text: "После запуска откройте нужный инструмент."; color: Theme.muted; font.pixelSize: 13 }
                         StudioButton { text: "Открыть чат"; iconName: "message"; Layout.fillWidth: true; enabled: host.running(); onClicked: host.navigate(1) }

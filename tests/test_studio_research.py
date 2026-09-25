@@ -254,6 +254,61 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(resumed["completed_steps"][0]["result_id"], first_id)
         self.assertEqual(len(self.store.results(self.config.model_id)), 2)
 
+    def test_memory_comparison_covers_baseline_and_target_including_f16(self):
+        config = LaunchConfig(model="test.gguf", backend="llama.cpp", managed=True,
+                              executable="llama-server.exe", capabilities=("mtp", "kv-cache"),
+                              context=32768, kv_type="q8_0")
+        plan = {**self.plan, "contexts": [32768, 65536, 98304, 131072],
+                "target_context": 131072, "max_configs": 12, "memory_economy": True}
+        planned = plan_candidates(config, plan)
+        self.assertLessEqual(len(planned), 12)
+        self.assertEqual(len({c["key"] for c in planned}), len(planned))
+        for context in (32768, 131072):
+            self.assertEqual({c["config"].kv_type for c in planned if c["config"].context == context},
+                             {"f16", "q8_0", "q4_0"})
+        first_context = next(i for i, c in enumerate(planned) if c["stage"] == "context")
+        self.assertTrue(all(i < first_context for i, c in enumerate(planned)
+                            if c["stage"] == "kv" and c["config"].context == 32768))
+        no_memory = plan_candidates(config, {**plan, "memory_economy": False})
+        self.assertFalse(any(c["stage"] == "kv" for c in no_memory))
+        small = plan_candidates(config, {**plan, "max_configs": 2})
+        self.assertEqual(len(small), 2)
+        self.assertNotEqual(small[0]["config"], small[1]["config"])
+
+    def test_memory_variants_share_acceleration_and_unsupported_one_is_saved(self):
+        class MemorySession(FakeSession):
+            def start(self, config):
+                if config.kv_type == "q8_0":
+                    raise RuntimeError("KV type unsupported by this runtime")
+                return super().start(config)
+
+            def benchmark(self, runs, tokens):
+                measured = super().benchmark(runs, tokens)
+                on = self.snapshot["config"]["mtp"]
+                measured["summary"]["median_tokens_per_second"] = 35 if on else 20
+                for run in measured["runs"]:
+                    run["draft_n"] = 10 if on else 0
+                return measured
+        model = self.store.upsert_model({"backend": "gguf", "locator": "test.gguf", "name": "test",
+                                         "digest": "abc", "identity_verified": True})
+        config = LaunchConfig(model="test.gguf", model_id=model["id"], backend="llama.cpp", managed=True,
+                              executable="llama-server.exe", capabilities=("mtp", "kv-cache"), context=32768)
+        plan = {**self.plan, "contexts": [32768, 65536], "target_context": 65536,
+                "max_configs": 12, "memory_economy": True}
+        session = MemorySession()
+        session.client.backend = "llama.cpp"
+        with patch("model_studio.benchmarks.research._long_context_probe",
+                   return_value={"validated": True, "accepted_tokens": 32000}):
+            job = run_research(session, self.store, config, plan)
+        self.assertEqual(job["status"], "completed")
+        variants = [s for s in job["completed_steps"] if s["stage"] == "kv"]
+        self.assertTrue(all(s["config"]["mtp"] for s in variants))
+        self.assertTrue(any(s["config"]["kv_type"] == "q4_0" and s["status"] == "completed" for s in variants))
+        failed = [r for r in self.store.results() if r["config"]["kv_type"] == "q8_0"]
+        self.assertEqual(len(failed), 2)
+        self.assertTrue(all(r["status"] == "error" and not r["comparison_eligible"] for r in failed))
+        self.assertEqual(session.unloads, 1)
+
     def test_research_uses_best_verified_acceleration_for_context(self):
         class SpeedSession(FakeSession):
             def benchmark(self, runs, tokens):
@@ -402,6 +457,13 @@ class ResearchTests(unittest.TestCase):
         self.assertTrue(cards[1]["available"])
         self.assertTrue(cards[2]["available"])
         self.assertFalse(cards[0]["exact_current"])
+        self.assertIsNone(cards[0]["kv_type"])  # Ollama's placeholder is not an observed KV type.
+        configured = {**base, "effective_config": {**base["effective_config"], "backend": "llama.cpp", "managed": True,
+                                                   "mtp": True, "draft": 4, "kv_type": "q8_0"}}
+        card = recommendations([configured])[0]
+        self.assertEqual((card["mtp"], card["draft"], card["kv_type"]), (True, 4, "q8_0"))
+        self.assertIsNone(recommendations([])[0]["mtp"])
+        self.assertIsNone(recommendations([])[0]["kv_type"])
         unproved = {**base, "artifact": {"identity_verified": False, "digest": None}}
         self.assertFalse(recommendations([unproved])[0]["available"])
         no_long = {**base, "long_context": {"validated": False}}

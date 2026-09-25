@@ -11,6 +11,7 @@ Item {
     property string mode: "quick"
     property int maxContext: 131072
     property int budgetMinutes: 30
+    property bool memoryEconomy: true
     property bool acknowledge: false
     property string contextFilter: ""
     property string statusFilter: ""
@@ -38,6 +39,23 @@ Item {
     function v(o,k,d) { let x=o && o[k]; return x===undefined || x===null || x==="" ? d : x }
     function shown(x,s) { if(x===undefined || x===null || x==="") return "Нет данных"; return (typeof x==="number" && Number.isFinite(x) ? x.toLocaleString(Qt.locale("ru_RU"), "f", s===" с" ? 3 : 2) : String(x))+(s||"") }
     function contextLabel(x) { let n=Number(x); return x===undefined || x===null || x==="" ? "Нет данных" : Number.isFinite(n) && n>=1024 ? (n%1024===0 ? n/1024 : Math.round(n/1000))+"K" : String(x) }
+    function canCompareMemory() { return v(bridge.selectedModel,"backend","")==="gguf" && (v(bridge.selectedModel,"capabilities",[]) || []).indexOf("kv-cache")>=0 }
+    function modeDetails(config) {
+        if (!config) return ""
+        let parts=[]
+        if (config.mtp===true || config.mtp===false) parts.push("MTP " + (config.mtp ? "вкл." : "выкл."))
+        if (config.mtp===true && config.draft!==undefined && config.draft!==null && config.draft!=="") parts.push("Draft " + config.draft)
+        if (config.kv_type) parts.push("Память " + ({f16:"F16",q8_0:"Q8",q4_0:"Q4"}[String(config.kv_type).toLowerCase()] || String(config.kv_type).toUpperCase()))
+        return parts.join("  •  ")
+    }
+    function configDetails(config) { return config && config.backend==="llama.cpp" && config.managed===true ? modeDetails(config) : "" }
+    function unavailableNote(rec) {
+        let reason=String(v(rec,"reason","")).toLowerCase()
+        if (reason.indexOf("после проверки")>=0 || reason.indexOf("до проверки файла")>=0) return "Нужен новый тест после проверки модели."
+        if (reason.indexOf("длинн")>=0 || reason.indexOf("целевого контекста")>=0) return "Длинный контекст ещё не подтверждён."
+        if (reason.indexOf("ещё не проверена")>=0 || reason.indexOf("еще не проверена")>=0) return "Среда ещё проверяется."
+        return "Нужен подходящий проверенный замер."
+    }
     function statusLabel(s) { return ({completed:"Сохранён", running:"Выполняется", cancelled:"Остановлен", stopped:"Прерван", interrupted:"Прерван", error:"Ошибка", failed:"Ошибка"})[s] || String(s || "Нет данных") }
     function jobReason(job) { return job.error || job.restore_error || ({budget_exhausted:"Лимит времени исчерпан", cancelled:"Остановлено пользователем", completed:"План завершён", exhausted:"План завершён", lease_or_storage_error:"Не удалось выполнить задание", configuration_limit:"Достигнут лимит конфигураций", start_failed:"Не удалось запустить модель", fit_failure:"Конфигурация не поместилась в память", measurement_failed:"Замер завершился ошибкой", error:"Ошибка выполнения"})[job.stop_reason] || job.stop_reason || "" }
     function contextOptions() { let a=[{text:"Все контексты",value:""}], seen={}; for (let r of (page.researchFilter ? (bridge.researchResults || []) : (bridge.results || []))) { let c=String(v(r,"context","")); if (c && !seen[c]) { seen[c]=true; a.push({text:contextLabel(c),value:c}) } } return a }
@@ -103,7 +121,7 @@ Item {
                     }
                 }
             }
-            RowLayout { visible: page.mode==="setup" && !page.progressing; Layout.fillWidth: true; Layout.preferredHeight: 460; spacing: 12
+            RowLayout { visible: page.mode==="setup" && !page.progressing; Layout.fillWidth: true; Layout.preferredHeight: 490; spacing: 12
                 StudioCard { Layout.minimumWidth: Math.max(320,(page.width-61)/2); Layout.maximumWidth: Math.max(320,(page.width-61)/2); Layout.fillHeight: true
                     ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 15
                         Text { text: "Найти удобные режимы для этого компьютера"; color: Theme.text; font.pixelSize: 20; font.bold: true; wrapMode: Text.WordWrap; Layout.fillWidth: true }
@@ -120,7 +138,7 @@ Item {
                     }
                 }
                 ColumnLayout { Layout.minimumWidth: Math.max(320,(page.width-61)/2); Layout.maximumWidth: Math.max(320,(page.width-61)/2); Layout.fillHeight: true; spacing: 10
-                    StudioCard { Layout.fillWidth: true; Layout.preferredHeight: 164
+                    StudioCard { Layout.fillWidth: true; Layout.preferredHeight: 224
                         ColumnLayout { anchors.fill: parent; anchors.margins: 14; spacing: 10
                             Text { text: "Границы исследования"; color: Theme.text; font.pixelSize: 18; font.bold: true }
                             RowLayout { Layout.fillWidth: true
@@ -131,6 +149,8 @@ Item {
                                 Text { text: "Бюджет времени, мин"; color: Theme.muted; Layout.fillWidth: true }
                                 SpinBox { from: 5; to: 240; value: page.budgetMinutes; onValueModified: page.budgetMinutes=value }
                             }
+                            CheckBox { text: "Сравнить память контекста: F16 / Q8 / Q4"; checked: page.memoryEconomy; enabled: page.canCompareMemory(); onToggled: page.memoryEconomy=checked }
+                            Text { text: "Сравним исходный и максимальный контекст. Качество ответов не оцениваем: сжатие может на него влиять."; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true; visible: page.canCompareMemory() }
                             Text { text: "Проверяются только поддерживаемые параметры."; color: Theme.muted; font.pixelSize: 12 }
                         }
                     }
@@ -141,7 +161,7 @@ Item {
                             CheckBox { text: "Понимаю влияние на внешние приложения"; checked: page.acknowledge; onToggled: page.acknowledge=checked }
                         }
                     }
-                    StudioButton { text: "Начать исследование"; iconName: "player-play"; primary: true; Layout.fillWidth: true; enabled: page.acknowledge && !!page.v(bridge.selectedModel,"id","") && page.v(bridge.selectedModel,"testable",true) && !bridge.busy; onClicked: { bridge.runResearch({max_context:page.maxContext,budget_minutes:page.budgetMinutes,external_use_acknowledged:true}); if (bridge.busy) page.mode="progress" } }
+                    StudioButton { text: "Начать исследование"; iconName: "player-play"; primary: true; Layout.fillWidth: true; enabled: page.acknowledge && !!page.v(bridge.selectedModel,"id","") && page.v(bridge.selectedModel,"testable",true) && !bridge.busy; onClicked: { bridge.runResearch({max_context:page.maxContext,budget_minutes:page.budgetMinutes,memory_economy:page.memoryEconomy && page.canCompareMemory(),external_use_acknowledged:true}); if (bridge.busy) page.mode="progress" } }
                     StudioButton { text: "Вернуться к запуску"; iconName: "arrow-left"; Layout.fillWidth: true; onClicked: host.navigate(0) }
                     Item { Layout.fillHeight: true }
                 }
@@ -176,7 +196,7 @@ Item {
                                 delegate: Rectangle { required property var modelData; width: ListView.view.width; height: 34; color: "transparent"; border.color: Theme.border
                                     RowLayout { anchors.fill: parent; anchors.margins: 6
                                         Text { text: page.contextLabel(page.v(modelData,"context",null)); color: Theme.text; Layout.preferredWidth: 72 }
-                                        Text { text: page.v(page.v(modelData,"config",{}),"mtp",false) ? "MTP  •  Draft " + page.v(page.v(modelData,"config",{}),"draft","?") : page.statusLabel(page.v(modelData,"status","Замер")); color: Theme.muted; Layout.fillWidth: true; elide: Text.ElideRight }
+                                        Text { text: page.configDetails(page.v(modelData,"config",{})) || page.statusLabel(page.v(modelData,"status","Замер")); color: Theme.muted; Layout.fillWidth: true; elide: Text.ElideRight }
                                         Text { text: page.shown(page.v(modelData,"speed",null)," ток/с"); color: Theme.text }
                                     }
                                 }
@@ -204,12 +224,13 @@ Item {
                     StudioCard { required property string modelData; required property int index; property var rec: {
                             let a=bridge.recommendations || []; for(let i=0;i<a.length;i++) if(a[i].key===modelData) return a[i]; return null
                         }
-                        Layout.fillWidth: true; Layout.preferredHeight: 136
+                        Layout.fillWidth: true; Layout.preferredHeight: 153
                         ColumnLayout { anchors.fill: parent; anchors.margins: 13; spacing: 7
                             Text { text: rec ? page.v(rec,"title","") : ["Максимальная скорость","Сбалансированный","Максимальный контекст"][index]; color: Theme.text; font.pixelSize: 14; font.bold: true }
                             Text { text: rec && rec.available ? page.contextLabel(rec.context) + "  •  " + page.shown(rec.speed," ток/с") : "Нет проверенного режима"; color: Theme.muted; font.pixelSize: 15 }
-                            Text { visible: !!rec && !rec.available; text: rec ? rec.reason : ""; color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap; maximumLineCount: 3; elide: Text.ElideRight
-                                ToolTip.visible: recommendationReasonHover.hovered; ToolTip.text: text
+                            Text { visible: !!rec && !!rec.available && !!page.modeDetails(rec); text: page.modeDetails(rec); color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
+                            Text { visible: !!rec && !rec.available; text: page.unavailableNote(rec); color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
+                                ToolTip.visible: recommendationReasonHover.hovered; ToolTip.text: page.v(rec,"reason",text)
                                 HoverHandler { id: recommendationReasonHover }
                             }
                             Item { Layout.fillHeight: true }
@@ -226,7 +247,7 @@ Item {
                             height: 56; color: page.v(bridge.selectedResult,"id","")===page.v(modelData,"id","") ? "#202648" : "transparent"; border.color: Theme.border
                             RowLayout { anchors.fill: parent; anchors.margins: 10
                                 Text { text: page.contextLabel(page.v(modelData,"context",null)); color: Theme.text; Layout.preferredWidth: 96 }
-                                Text { text: page.v(modelData,"model_name",""); color: Theme.muted; Layout.fillWidth: true; elide: Text.ElideRight }
+                                Text { text: page.v(modelData,"model_name","") + (page.configDetails(page.v(modelData,"config",{})) ? "  •  " + page.configDetails(page.v(modelData,"config",{})) : ""); color: Theme.muted; Layout.fillWidth: true; elide: Text.ElideRight }
                                 Text { objectName: "resultSpeed"; text: page.shown(page.v(modelData,"speed",null)," ток/с"); color: Theme.text; Layout.minimumWidth: 112; Layout.maximumWidth: 112; horizontalAlignment: Text.AlignRight; elide: Text.ElideRight }
                                 Text { objectName: "resultTtft"; text: page.shown(page.v(modelData,"ttft",null)," с"); color: Theme.muted; Layout.minimumWidth: 88; Layout.maximumWidth: 88; horizontalAlignment: Text.AlignRight; elide: Text.ElideRight }
                                 Text { objectName: "resultStatus"; text: page.statusLabel(page.v(modelData,"status","")); color: page.v(modelData,"status","")==="completed" ? Theme.green : Theme.muted; Layout.minimumWidth: 84; Layout.maximumWidth: 84; horizontalAlignment: Text.AlignRight; elide: Text.ElideRight }
@@ -235,7 +256,7 @@ Item {
                         }
                     }
                     StudioButton { visible: !page.researchFilter && !!bridge.hasMoreResults; text: "Загрузить ещё замеры"; iconName: "chevron-down"; Layout.alignment: Qt.AlignHCenter; onClicked: bridge.loadMoreResults() }
-                    Text { text: page.v(bridge.selectedResult,"id","") ? "Выбранный замер: " + page.contextLabel(page.v(bridge.selectedResult,"context",null)) + "  •  " + page.shown(page.v(bridge.selectedResult,"speed",null)," ток/с") + (page.v(bridge.selectedResult,"legacy_source","") ? "  •  Импортированный отчёт" : "") : "Для выбранной модели и фильтров нет сохранённых замеров. Отчёт появится после сохранения результата."; color: Theme.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 12 }
+                    Text { text: page.v(bridge.selectedResult,"id","") ? "Выбранный замер: " + page.contextLabel(page.v(bridge.selectedResult,"context",null)) + "  •  " + page.shown(page.v(bridge.selectedResult,"speed",null)," ток/с") + (page.configDetails(page.v(bridge.selectedResult,"config",{})) ? "  •  " + page.configDetails(page.v(bridge.selectedResult,"config",{})) : "") + (page.v(bridge.selectedResult,"legacy_source","") ? "  •  Импортированный отчёт" : "") : "Для выбранной модели и фильтров нет сохранённых замеров. Отчёт появится после сохранения результата."; color: Theme.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 12 }
                     RowLayout { visible: !!page.v(bridge.selectedResult,"id",""); Layout.fillWidth: true; spacing: 19
                         Text { text: "Среда: " + page.v(page.v(bridge.selectedResult,"config",{}),"runtime_name","Нет данных"); color: Theme.muted; font.pixelSize: 12 }
                         Text { text: "Первый токен: " + page.shown(page.v(bridge.selectedResult,"ttft",null)," с"); color: Theme.muted; font.pixelSize: 12 }

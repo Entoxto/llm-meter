@@ -80,22 +80,27 @@ def plan_candidates(config, plan: dict) -> list[dict]:
         context_candidates.insert(0, target)
     kv_allowed = managed_llama and "kv-cache" in config.capabilities and (
         plan.get("memory_economy") is True or plan.get("fit_failure") is True)
-    kv_types = [k for k in ("q8_0", "q4_0") if k != config.kv_type] if kv_allowed else []
-    reserved_kv = min(len(kv_types), max(0, cap - 2))
-    room_before_kv = max(1, cap - reserved_kv)
-    # Keep the baseline and at least one context candidate if requested.
-    reserve_context = 1 if context_candidates and room_before_kv > 1 else 0
-    candidates = candidates[:max(1, room_before_kv - reserve_context)]
-    for context in context_candidates:
-        if len(candidates) >= room_before_kv:
-            break
+    kv_types = ("f16", "q8_0", "q4_0") if kv_allowed else ()
+    def memory_candidates(context, include_current=False):
+        return [{"key": f"kv:{context}:{kind}", "stage": "kv",
+                 "config": replace(config, context=context, kv_type=kind)}
+                for kind in kv_types if include_current or kind != config.kv_type]
+    # Compare memory before expensive maximum-context probes. If acceleration
+    # can change, repeat the original cache with the same winning acceleration.
+    baseline_memory = memory_candidates(config.context, len(candidates) > 1) if plan.get("memory_economy") else []
+    target_memory = memory_candidates(target) if target != config.context or not baseline_memory else []
+    reserve = len(baseline_memory) + len(target_memory) + bool(context_candidates)
+    candidates = candidates[:max(1, cap - reserve)]
+    if len(candidates) == 1:
+        baseline_memory = [c for c in baseline_memory if c["config"].kv_type != config.kv_type]
+    candidates.extend(baseline_memory)
+    for index, context in enumerate(context_candidates):
         candidates.append({"key": f"context:{context}", "stage": "context",
                            "config": replace(config, context=context)})
-    for kv_type in kv_types:
-        if len(candidates) >= cap:
-            break
-        candidates.append({"key": f"kv:{target}:{kv_type}", "stage": "kv",
-                           "config": replace(config, context=target, kv_type=kv_type)})
+        if index == 0:
+            candidates.extend(target_memory)
+    if not context_candidates:
+        candidates.extend(target_memory)
     return candidates[:cap]
 
 
@@ -518,6 +523,8 @@ def run_research(session, store, config, plan: dict, emit=None,
                 try:
                     started = lease.start(candidate)
                     if started.get("status") != "ready":
+                        if stage == "kv" and not lease.cancel_event.is_set():
+                            raise RuntimeError(started.get("error") or "Runtime не запустил этот тип памяти контекста")
                         end_reason = "cancelled" if lease.cancel_event.is_set() else "start_failed"
                         break
                     proof_key = json.dumps({k: candidate.to_dict()[k] for k in
@@ -558,6 +565,8 @@ def run_research(session, store, config, plan: dict, emit=None,
                         if lease.cancel_event.is_set():
                             end_reason = end_reason or "cancelled"
                             break
+                        if stage == "kv":
+                            continue  # One unsupported cache must not hide the others.
                         if "memory" in str(saved.get("error", "")).lower() or "oom" in str(saved.get("error", "")).lower():
                             plan["fit_failure"] = True
                             job = store.update_research(job["id"], {"plan": {**job["plan"], "fit_failure": True}})
@@ -574,6 +583,16 @@ def run_research(session, store, config, plan: dict, emit=None,
                     end_reason = end_reason or ("budget_exhausted" if time.monotonic() >= deadline else "cancelled")
                     break
                 except Exception as exc:
+                    if stage == "kv" and not lease.cancel_event.is_set():
+                        failed = prepare_result(store, candidate, {"status": "error", "error": str(exc)}, plan)
+                        failed.update(research_id=job["id"], long_context={"validated": False, "reason": str(exc)})
+                        saved = store.save_result(failed)
+                        step = {"key": key, "stage": stage, "context": candidate.context,
+                                "config": candidate.to_dict(), "result_id": saved["id"], "status": "error",
+                                "error": str(exc), "comparison_eligible": False, "effective_config_verified": False}
+                        job = store.update_research(job["id"], {"completed_steps": job["completed_steps"] + [step]})
+                        _emit(emit, "research_result", {"job_id": job["id"], "result": saved})
+                        continue
                     if not lease.cancel_event.is_set() and any(s in str(exc).lower() for s in ("memory", "oom")):
                         plan["fit_failure"] = True
                         job = store.update_research(job["id"], {"plan": {**job["plan"], "fit_failure": True},
