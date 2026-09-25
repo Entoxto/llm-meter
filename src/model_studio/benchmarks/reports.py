@@ -92,9 +92,12 @@ def reports_text(results: list[dict], title: str, research: dict | None = None) 
             "id", "created_at", "updated_at", "status", "stop_reason", "error", "restore_error")}
         plan = job.get("plan") or {}
         metadata["plan"] = {key: plan[key] for key in (
-            "base_config", "contexts", "target_context", "max_configs", "budget_minutes", "runs", "memory_economy")
+            "scope", "base_config", "contexts", "target_context", "max_configs", "budget_minutes", "runs", "memory_economy")
             if key in plan}
         lines += ["", "Исследование:", json.dumps(metadata, ensure_ascii=False, indent=2)]
+        reused = sum(bool(step.get("reused")) for step in job.get("completed_steps", []))
+        if reused:
+            lines.append(f"Использовано сопоставимых замеров из истории: {reused}.")
         expected = {step.get("result_id") for step in job.get("completed_steps", []) if step.get("result_id")}
         missing = expected - {row.get("id") for row in results}
         if missing:

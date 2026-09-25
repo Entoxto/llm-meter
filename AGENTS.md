@@ -26,6 +26,7 @@ IMPLEMENTATION.md; не создавайте отсутствующие слои
 | Каталог, алиасы, runtime-профиль | `catalog.py`; корневые `inventory.py`, `model_aliases.py`, `runtime_profiles.py` | `test_studio_catalog.py`, `test_management.py` |
 | Пользовательское имя модели | `storage/store.py` (`rename_model`), `desktop/controllers.py` (`renameModel`), `desktop/qml/ModelsPage.qml` | `test_studio_catalog.py`, `test_studio_desktop.py` |
 | Доступность ручных параметров runtime | `backends/capabilities.py`, `desktop/controllers.py` (`_load` → `_profile`) | `test_studio_capabilities.py`, `test_studio_desktop.py`, `test_studio_session.py` |
+| MTP: обнаружение и отдельное дотестирование | `inventory.py` (NextN/tensors), `catalog.py`, `backends/capabilities.py`, `desktop/controllers.py`, `benchmarks/research.py` (`scope=mtp`) | `test_studio_mtp_inventory.py`, `test_studio_capabilities.py`, `test_studio_research.py`, `test_studio_desktop.py` |
 | Чат, mmproj, картинки | `chat.py`, `attachments.py`, `backends/images.py`, `desktop/qml/ChatPage.qml` | `test_studio_chat.py`, `test_studio_attachments.py`, `test_studio_vision.py` |
 | Исследование, результаты, рекомендации | `benchmarks/research.py`, `recommendations.py`, `reports.py`; измерительный runner в корневом `engine.py` | `test_studio_research.py`, `test_studio_reports.py`, `test_engine.py`, `test_studio_vision.py` |
 | БД, миграции, импорт, backup | `storage/store.py`, `platform/paths.py` | `test_studio_storage.py`, `test_studio_attachments.py` |

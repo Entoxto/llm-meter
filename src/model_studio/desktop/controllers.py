@@ -232,12 +232,14 @@ class Studio(QObject):
             elif event == "research_started":
                 self._values["research"] = {**data, "status": "running", "phase": "Начало исследования", "completed": 0, "progress": 0, "results": []}
             elif event == "research_progress":
-                self._values["research"].update(data, status="running", phase="Проверяем конфигурацию", completed=data.get("index", 1) - 1,
+                self._values["research"].update(data, status="running", phase="Используем сохранённый замер" if data.get("reused") else "Проверяем конфигурацию", completed=data.get("index", 1) - 1,
                     progress=(data.get("index", 1) - 1) / max(1, data.get("total", 1)))
             elif event == "research_result":
                 result = self._result_view(data["result"])
+                result["reused"] = bool(data.get("reused"))
                 self._values["research"].setdefault("results", []).append(result)
-                self._values["results"].insert(0, result)
+                if not any(r["id"] == result["id"] for r in self._values["results"]):
+                    self._values["results"].insert(0, result)
             elif event == "research_restoring":
                 self._values["research"].update(status="running", phase="Восстанавливаем исходную сессию")
             elif event == "research_finished":
@@ -353,6 +355,17 @@ class Studio(QObject):
         profile = runtime_for(self.settings, model.get("path", ""), self.settings.get("server_exe", ""))
         detected = self._values.get("runtimeCapabilities", {}).get(profile["executable"], [])
         profile["capabilities"] = list(dict.fromkeys([*profile.get("capabilities", []), *detected]))
+        if "mtp" in profile["capabilities"]:
+            profile["mtp_reason"] = "MTP настроен в профиле этой модели. Эффект проверяется замером."
+        elif model.get("mtp_model_status") == "supported" and "mtp-runtime" in detected:
+            profile["capabilities"].append("mtp")
+            profile["mtp_reason"] = "В модели есть MTP, сервер поддерживает его. Эффект проверяется замером."
+        elif model.get("mtp_model_status") == "supported":
+            profile["mtp_reason"] = "В модели есть MTP, но выбранный сервер не подтвердил поддержку."
+        elif model.get("mtp_model_status") == "unsupported":
+            profile["mtp_reason"] = "В этом файле модели нет полного набора весов MTP."
+        else:
+            profile["mtp_reason"] = "Поддержка MTP для этого файла модели пока не определена."
         return profile
 
     def _select(self, model):
@@ -372,7 +385,11 @@ class Studio(QObject):
             try:
                 profile = self._profile(model)
                 _, mtp, draft = normalize_profile(profile)
-                model.update(capabilities=profile.get("capabilities", []), runtime_name=profile.get("name", "Ollama" if model.get("backend") == "ollama" else "Внешний llama.cpp"))
+                model.update(capabilities=profile.get("capabilities", []),
+                             mtp_reason=profile.get("mtp_reason", "MTP недоступен через выбранную среду."),
+                             runtime_name=profile.get("name", "Ollama" if model.get("backend") == "ollama" else "Внешний llama.cpp"))
+                if "mtp" not in model["capabilities"]:
+                    self._values["draft"]["mtp"] = False
                 if changed or self.selectedModel.get("runtime_name") != model.get("runtime_name"):
                     self._values["draft"].update(mtp=mtp, draft=draft)
                     if model.get("backend") == "llama.cpp" and model.get("context_limit"):
@@ -797,6 +814,8 @@ class Studio(QObject):
 
     @Slot("QVariantMap")
     def runResearch(self, plan):
+        if self.busy:
+            return
         try:
             from model_studio.benchmarks.research import run_research
             config = self._config()
@@ -805,7 +824,8 @@ class Studio(QObject):
         plan = dict(plan)
         maximum = int(plan.get("max_context", 131072))
         plan.setdefault("contexts", sorted({maximum, *(c for c in (32768, 65536, 98304, 102400, 131072) if c <= maximum)}))
-        plan.setdefault("max_configs", 12 if plan.get("memory_economy") else 8)
+        plan.setdefault("max_configs", 12 if plan.get("memory_economy") or plan.get("scope") == "mtp" else 8)
+        plan.setdefault("max_draft", 4)
         plan.setdefault("acknowledged_external", plan.get("external_use_acknowledged", False))
         plan.update(identity_verified=self.selectedModel.get("identity_verified", False), artifact_digest=self.selectedModel.get("digest"))
         self._research_cancel = threading.Event()

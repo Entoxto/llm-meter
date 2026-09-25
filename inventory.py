@@ -65,7 +65,7 @@ def fingerprint(path):
 
 
 def gguf_metadata(path):
-    """Read metadata only; arrays are skipped without loading the tokenizer/tensors."""
+    """Read bounded GGUF header and tensor directory, never tensor weights."""
     limit = min(Path(path).stat().st_size, 128 * 1024 * 1024)
     with open(path, "rb") as f:
         def read(n):
@@ -114,21 +114,64 @@ def gguf_metadata(path):
 
         if read(4) != b"GGUF" or number("I") not in (2, 3):
             raise ValueError("Ожидается GGUF v2/v3")
-        number("Q")  # tensor count
+        tensor_count = number("Q")
+        if tensor_count > 100000:
+            raise ValueError("Слишком много тензоров GGUF")
         count = number("Q")
         if count > 100000:
             raise ValueError("Слишком много metadata GGUF")
         result = {}
         for _ in range(count):
             key = string()
-            keep = key in ("general.name", "general.architecture", "general.file_type")
+            keep = key in ("general.name", "general.architecture", "general.file_type") or key.endswith(
+                (".nextn_predict_layers", ".block_count"))
             item = value(number("I"), keep)
             if keep:
                 if key == "general.file_type" and not isinstance(item, int):
                     raise ValueError("Некорректный тип кванта GGUF")
-                if key != "general.file_type" and not isinstance(item, str):
+                if key in ("general.name", "general.architecture") and not isinstance(item, str):
                     raise ValueError("Некорректная строка GGUF metadata")
                 result[key] = item
+        tensor_names = set()
+        for _ in range(tensor_count):
+            name = string()
+            if len(name) > 4096:
+                raise ValueError("Слишком длинное имя тензора GGUF")
+            dimensions = number("I")
+            if dimensions > 4:
+                raise ValueError("Некорректная размерность тензора GGUF")
+            skip(8 * dimensions + 4 + 8)  # shape, GGML type, data offset
+            tensor_names.add(name)
+        architecture = result.get("general.architecture")
+        layers = result.get(f"{architecture}.nextn_predict_layers")
+        blocks = result.get(f"{architecture}.block_count")
+        evidence = {"architecture": architecture,
+                    "nextn_predict_layers": layers if type(layers) is int else None,
+                    "block_count": blocks if type(blocks) is int else None,
+                    "head_block": None, "required_tensors_present": False}
+        status = "unknown"
+        if architecture == "qwen35":
+            status = "unsupported"
+            if type(layers) is int and type(blocks) is int and 0 < layers <= blocks:
+                first_head = blocks - layers
+                evidence["head_block"] = first_head
+                for block in range(first_head, blocks):
+                    prefix = f"blk.{block}."
+                    required = {prefix + suffix for suffix in (
+                        "attn_norm.weight", "post_attention_norm.weight", "attn_output.weight",
+                        "attn_q_norm.weight", "attn_k_norm.weight", "ffn_gate.weight",
+                        "ffn_down.weight", "ffn_up.weight", "nextn.eh_proj.weight",
+                        "nextn.enorm.weight", "nextn.hnorm.weight")}
+                    qkv = {prefix + suffix for suffix in
+                           ("attn_q.weight", "attn_k.weight", "attn_v.weight")}
+                    fused_qkv = prefix + "attn_qkv.weight"
+                    if not required <= tensor_names or not (qkv <= tensor_names or fused_qkv in tensor_names):
+                        break
+                else:
+                    evidence["required_tensors_present"] = True
+                    status = "supported"
+        result["mtp_model_status"] = status
+        result["mtp_model_evidence"] = evidence
         quant = result.get("general.file_type")
         result["quant"] = QUANTS.get(quant, f"тип {quant}" if quant is not None else None)
         return result
@@ -162,7 +205,9 @@ def scan_gguf(directories, known_files=()):
             try:
                 meta = gguf_metadata(path)
                 row.update(quant=meta["quant"], architecture=meta.get("general.architecture"),
-                           model_name=meta.get("general.name"))
+                           model_name=meta.get("general.name"),
+                           mtp_model_status=meta["mtp_model_status"],
+                           mtp_model_evidence=meta["mtp_model_evidence"])
             except (OSError, ValueError) as exc:
                 row["error"] = str(exc)
             rows.append(row)

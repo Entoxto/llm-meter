@@ -41,3 +41,18 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         result = Mock(returncode=0, stdout="--reasoning [on|off|auto]\n--reasoning-budget-message TEXT", stderr="")
         with patch("model_studio.backends.capabilities.subprocess.run", return_value=result):
             self.assertEqual(runtime_capabilities(str(self.exe)), ["reasoning"])
+
+    def test_mtp_runtime_requires_exact_selector_and_draft_limit(self):
+        result = Mock(returncode=0,
+                      stdout="--spec-type none,draft-simple,draft-mtp\n--spec-draft-n-max N",
+                      stderr="")
+        with patch("model_studio.backends.capabilities.subprocess.run", return_value=result):
+            self.assertEqual(runtime_capabilities(str(self.exe)), ["mtp-runtime"])
+        for help_text in ("--spec-type none,draft-mtp\n--spec-draft-n-min N",
+                          "--spec-type-extra draft-mtp\n--spec-draft-n-max N",
+                          "--spec-type none,draft-mtp-other\n--spec-draft-n-max N"):
+            with self.subTest(help_text=help_text):
+                _probe.cache_clear()
+                result.stdout = help_text
+                with patch("model_studio.backends.capabilities.subprocess.run", return_value=result):
+                    self.assertEqual(runtime_capabilities(str(self.exe)), [])

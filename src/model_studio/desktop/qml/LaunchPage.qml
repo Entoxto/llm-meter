@@ -157,7 +157,7 @@ Item {
                     RowLayout { Layout.fillWidth: true; spacing: 16
                         Text { text: "Ускорение MTP"; color: Theme.text; font.pixelSize: 14; Layout.preferredWidth: 136 }
                         Switch { checked: !!page.v(bridge.draft,"mtp",false); enabled: page.supports("mtp"); onToggled: bridge.setDraft("mtp",checked) }
-                        Text { text: page.supports("mtp") ? "Подтверждено runtime" : "Не подтверждено для этой модели/runtime"; color: Theme.muted; font.pixelSize: 12 }
+                        Text { text: page.v(bridge.selectedModel,"mtp_reason","Поддержка MTP пока не определена."); color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                     }
                     RowLayout { Layout.fillWidth: true; spacing: 16
                         Text { text: "Draft (для MTP)"; color: Theme.text; font.pixelSize: 14; Layout.preferredWidth: 136 }

@@ -49,6 +49,8 @@ class Catalog:
                            "filename": item["name"], "size_bytes": item["size"],
                            "fingerprint": stamp, "quantization": item.get("quant"),
                            "architecture": item.get("architecture"),
+                           "mtp_model_status": item.get("mtp_model_status", "unknown"),
+                           "mtp_model_evidence": item.get("mtp_model_evidence", {}),
                            "testable": testable_gguf({"name": item["name"],
                                                       "architecture": item.get("architecture")}),
                            "available": True})

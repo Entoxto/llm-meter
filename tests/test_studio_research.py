@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 import json
 import sys
@@ -78,6 +79,157 @@ class FakeSession:
 
 
 class ResearchTests(unittest.TestCase):
+    def _mtp_setup(self):
+        model = self.store.upsert_model({"backend": "gguf", "locator": "mtp.gguf",
+                                         "name": "mtp", "digest": "mtp-digest",
+                                         "identity_verified": True})
+        config = LaunchConfig(model="mtp.gguf", model_id=model["id"], backend="llama.cpp",
+                              managed=True, executable="llama-server.exe",
+                              capabilities=("mtp",), context=2048, kv_type="f16",
+                              reasoning="auto")
+        plan = {"scope": "mtp", "contexts": [2048], "target_context": 2048,
+                "max_configs": 12, "runs": 2, "acknowledged_external": True}
+        environment = {"backend": "llama.cpp", "runtime_build": "build-1",
+                       "hardware": "GPU-A", "driver": "D1", "verified": True}
+        class MtpSession(FakeSession):
+            def __init__(self):
+                super().__init__()
+                self.client.backend = "llama.cpp"
+            def benchmark(self, runs, tokens):
+                result = super().benchmark(runs, tokens)
+                result.update(requested_runs=runs, requested_tokens_per_run=tokens)
+                if self.snapshot["config"]["mtp"]:
+                    for run in result["runs"]:
+                        run["draft_n"] = self.snapshot["config"]["draft"]
+                return result
+        return config, plan, environment, MtpSession
+
+    def test_mtp_scope_candidates_and_capability(self):
+        config, plan, _, _ = self._mtp_setup()
+        candidates = plan_candidates(config, {**plan, "contexts": [2048, 4096],
+                                              "target_context": 4096})
+        self.assertEqual(len(candidates), 8)
+        self.assertEqual([(c["config"].context, c["config"].mtp,
+                           c["config"].draft if c["config"].mtp else None) for c in candidates],
+                         [(context, on, draft) for context in (2048, 4096)
+                          for on, draft in ((False, None), (True, 1), (True, 2), (True, 4))])
+        self.assertTrue(all(c["config"].kv_type == config.kv_type and
+                            c["config"].reasoning == config.reasoning for c in candidates))
+        with self.assertRaisesRegex(ValueError, "four configurations"):
+            plan_candidates(config, {**plan, "max_configs": 3})
+        with self.assertRaisesRegex(ValueError, "managed llama.cpp"):
+            plan_candidates(self.config, plan)
+
+    def test_mtp_reuses_only_matching_results_and_preserves_ownership(self):
+        config, plan, environment, Session = self._mtp_setup()
+        with patch("model_studio.benchmarks.research.environment_snapshot", return_value=environment), \
+             patch("model_studio.benchmarks.research._long_context_probe") as probe:
+            first_session = Session()
+            first = run_research(first_session, self.store, config, plan)
+            first_ids = [step["result_id"] for step in first["completed_steps"]]
+            self.assertEqual(len(first_ids), 4)
+            self.assertEqual(len(first_session.started), 4)
+            self.assertFalse(probe.called)
+            second_session = Session()
+            second = run_research(second_session, self.store, config, plan)
+            self.assertEqual(second_session.started, [])
+            self.assertEqual([step["result_id"] for step in second["completed_steps"]], first_ids)
+            self.assertTrue(all(step["reused"] for step in second["completed_steps"]))
+            self.assertEqual(len(self.store.results(config.model_id)), 4)
+            self.assertTrue(all(row["research_id"] == first["id"]
+                                for row in self.store.results(config.model_id)))
+            changed_env = {**environment, "driver": "D2"}
+            with patch("model_studio.benchmarks.research.environment_snapshot", return_value=changed_env):
+                third_session = Session()
+                third = run_research(third_session, self.store, config, plan)
+            self.assertEqual(len(third_session.started), 4)
+            self.assertTrue(all(not step.get("reused") for step in third["completed_steps"]))
+
+    def test_mtp_cancel_resume_skips_completed_and_reuses_remaining(self):
+        config, plan, environment, Session = self._mtp_setup()
+        session = Session()
+        session.after_benchmark = session.cancel
+        with patch("model_studio.benchmarks.research.environment_snapshot", return_value=environment):
+            first = run_research(session, self.store, config, plan)
+            self.assertEqual(first["status"], "cancelled")
+            self.assertEqual(len(first["completed_steps"]), 1)
+            first_id = first["completed_steps"][0]["result_id"]
+            session.after_benchmark = None
+            resumed = resume_research(session, self.store, first["id"])
+        self.assertEqual(resumed["status"], "completed")
+        self.assertEqual(len(resumed["completed_steps"]), 4)
+        self.assertEqual(resumed["completed_steps"][0]["result_id"], first_id)
+        self.assertEqual(len(self.store.results(config.model_id)), 4)
+
+    def test_mtp_failed_draft_does_not_hide_other_variants(self):
+        config, plan, environment, Session = self._mtp_setup()
+        class FailedDraftSession(Session):
+            def start(self, candidate):
+                if candidate.mtp and candidate.draft == 1:
+                    raise RuntimeError("Draft 1 unsupported")
+                return super().start(candidate)
+        with patch("model_studio.benchmarks.research.environment_snapshot", return_value=environment):
+            job = run_research(FailedDraftSession(), self.store, config, plan)
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual([step["status"] for step in job["completed_steps"]],
+                         ["completed", "error", "completed", "completed"])
+        failed = next(row for row in self.store.results(config.model_id)
+                      if row["id"] == job["completed_steps"][1]["result_id"])
+        self.assertEqual(failed["error"], "Draft 1 unsupported")
+        self.assertFalse(failed["comparison_eligible"])
+
+    def test_mtp_reuse_rejects_changed_settings_workload_and_actual_config(self):
+        from model_studio.benchmarks.research import _mtp_reusable_results, _artifact
+        config, plan, environment, Session = self._mtp_setup()
+        with patch("model_studio.benchmarks.research.environment_snapshot", return_value=environment):
+            first = run_research(Session(), self.store, config, plan)
+        candidate = plan_candidates(config, plan)[0]
+        source = next(row for row in self.store.results(config.model_id)
+                      if row["id"] == first["completed_steps"][0]["result_id"])
+        class OneResult:
+            def __init__(self, row):
+                self.row = row
+            def results(self, model_id):
+                return [self.row]
+        artifact = _artifact(self.store, config)
+        def reusable(row):
+            return _mtp_reusable_results(OneResult(row), config, [candidate],
+                                         artifact, environment, plan["runs"])
+        self.assertEqual(list(reusable(source)), [candidate["key"]])
+        legacy = deepcopy(source)
+        for part in ("config", "effective_config"):
+            legacy[part]["capabilities"] = ["reasoning", "reasoning-budget", "kv-cache"]
+            legacy[part]["runtime_name"] = "old-runtime-name"
+            legacy[part]["draft"] = 7  # Off does not apply the draft setting.
+        self.assertEqual(list(reusable(legacy)), [candidate["key"]])
+        for path, value in (("environment.driver", "D2"), ("config.kv_type", "q8_0"),
+                            ("config.reasoning", "on"), ("workload.method", "other"),
+                            ("workload.prompt_digest", "other"),
+                            ("workload.runs_requested", 1),
+                            ("workload.tokens_per_run", 256),
+                            ("workload.options", {"temperature": 1}),
+                            ("effective_config.kv_type", "q8_0"),
+                            ("effective_config.context", 8192),
+                            ("artifact.digest", "different")):
+            with self.subTest(path=path):
+                changed = deepcopy(source)
+                section, field = path.split(".")
+                changed[section][field] = value
+                self.assertEqual(reusable(changed), {})
+        for field, value in (("comparison_eligible", False),
+                             ("effective_config_verified", False), ("status", "error")):
+            with self.subTest(field=field):
+                changed = deepcopy(source)
+                changed[field] = value
+                self.assertEqual(reusable(changed), {})
+        on_candidate = plan_candidates(config, plan)[1]
+        on_source = next(row for row in self.store.results(config.model_id)
+                         if row["config"]["mtp"] and row["config"]["draft"] == 1)
+        changed = deepcopy(on_source)
+        changed["config"]["draft"] = 4
+        self.assertEqual(_mtp_reusable_results(OneResult(changed), config, [on_candidate],
+                                               artifact, environment, plan["runs"]), {})
+
     def test_unverified_file_is_hashed_before_research_and_old_reports_stay_unverified(self):
         from inventory import fingerprint
         from dataclasses import replace

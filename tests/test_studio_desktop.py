@@ -174,6 +174,50 @@ class StudioDesktopTests(unittest.TestCase):
         self.studio._refresh_recommendations()
         self.assertEqual(self.studio.matchingResult["id"], "saved")
 
+    def test_mtp_requires_model_head_and_runtime_or_explicit_profile(self):
+        model = {"id": "gguf", "backend": "gguf", "path": str(self.root / "model.gguf"),
+                 "name": "model", "available": True, "identity_verified": True, "digest": "abc"}
+        exe = str(self.root / "server.exe")
+        self.studio._values.update(settings={"server_exe": exe})
+        for status, runtime, expected in (("supported", ["mtp-runtime"], True),
+                ("supported", [], False), ("unsupported", ["mtp-runtime"], False),
+                ("unknown", ["mtp-runtime"], False)):
+            with self.subTest(status=status, runtime=runtime):
+                model["mtp_model_status"] = status
+                self.studio._values["runtimeCapabilities"] = {exe: runtime}
+                with patch.object(self.studio, "_capture_environment"):
+                    self.studio._select(model)
+                self.assertEqual("mtp" in self.studio.selectedModel["capabilities"], expected)
+                self.assertTrue(self.studio.selectedModel["mtp_reason"])
+                if expected:
+                    self.studio.setDraft("mtp", True)
+                    self.assertTrue(self.studio._config().mtp)
+                else:
+                    self.assertFalse(self.studio._config().mtp)
+        profile = {"name": "MTP profile", "executable": exe, "extra_args": [], "capabilities": ["mtp"]}
+        with patch("runtime_profiles.runtime_for", return_value=profile):
+            self.assertIn("mtp", self.studio._profile(model)["capabilities"])
+
+    def test_mtp_research_plan_reaches_runner_and_cannot_overlap(self):
+        from model_studio.configuration import LaunchConfig
+        config = LaunchConfig(model="model", model_id="id", backend="llama.cpp", managed=True,
+                              executable="server", capabilities=("mtp",))
+        plan = {"scope": "mtp", "contexts": [32768], "external_use_acknowledged": True}
+        with patch.object(self.studio, "_config", return_value=config), \
+                patch("model_studio.benchmarks.research.run_research", return_value={}) as runner:
+            self.studio.runResearch(plan)
+            self.assertTrue(self.studio.busy)
+            token = self.studio._research_cancel
+            self.studio.runResearch(plan)
+            self.assertIs(self.studio._research_cancel, token)
+            self.workers.complete("research")
+            sent = runner.call_args.args[3]
+            self.assertEqual(sent["scope"], "mtp")
+            self.assertEqual(sent["max_configs"], 12)
+            self.assertEqual(sent["max_draft"], 4)
+            self.assertEqual(sent["contexts"], [32768])
+            self.assertTrue(sent["acknowledged_external"])
+
     def test_projector_picker_offers_discovered_module_and_cancel_does_not_enable(self):
         model = {"id": "gguf", "backend": "gguf", "path": str(self.root / "model.gguf"), "available": True}
         projector = {"backend": "gguf", "path": str(self.root / "vision-mmproj.gguf"), "available": True, "testable": False}

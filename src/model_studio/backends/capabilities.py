@@ -36,4 +36,7 @@ def _probe(executable: str, size: int, mtime_ns: int) -> tuple[str, ...]:
             features.append("reasoning-budget")
     if {"--cache-type-k", "--cache-type-v"} <= options:
         features.append("kv-cache")
+    if "--spec-draft-n-max" in options and re.search(
+            r"(?<![\w-])--spec-type(?=[\s,=]|$)[^\n\r]*\bdraft-mtp(?=[^\w-]|$)", help_text):
+        features.append("mtp-runtime")
     return tuple(features)

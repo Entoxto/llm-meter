@@ -14,6 +14,14 @@ Item {
     property int customContext: 163840
     property bool memoryEconomy: true
     property bool acknowledge: false
+    readonly property bool mtpOnly: mode==="mtp"
+    function canTestMtp() { return (v(bridge.selectedModel,"capabilities",[]) || []).indexOf("mtp")>=0 }
+    function openMtp() {
+        let context=Number(v(bridge.draft,"context",32768))
+        if (!contextChoices.some(function(c) { return c.value===context }))
+            contextChoices=contextChoices.concat([{value:context,label:contextLabel(context)}]).sort(function(a,b) { return a.value-b.value })
+        selectedContexts=[context]; acknowledge=false; mode="mtp"
+    }
     property string contextFilter: ""
     property string statusFilter: ""
     property string backendFilter: ""
@@ -97,6 +105,7 @@ Item {
             RowLayout { visible: !page.progressing && page.mode!=="history"; spacing: 0
                 StudioButton { text: "Быстрый тест"; iconName: "chart-bar"; primary: page.mode==="quick"; onClicked: page.mode="quick" }
                 StudioButton { text: "Подобрать режимы"; iconName: "adjustments"; primary: page.mode==="setup"; onClicked: page.mode="setup" }
+                StudioButton { objectName: "mtpResearchTab"; text: "Исследовать MTP"; iconName: "chart-bar"; primary: page.mtpOnly; onClicked: page.openMtp() }
             }
             RowLayout { visible: page.mode==="quick" && !page.progressing; Layout.fillWidth: true; Layout.preferredHeight: 448; spacing: 11
                 StudioCard { Layout.fillWidth: true; Layout.fillHeight: true
@@ -135,12 +144,12 @@ Item {
                     }
                 }
             }
-            RowLayout { visible: page.mode==="setup" && !page.progressing; Layout.fillWidth: true; Layout.preferredHeight: 460; spacing: 12
+            RowLayout { visible: (page.mode==="setup" || page.mtpOnly) && !page.progressing; Layout.fillWidth: true; Layout.preferredHeight: 460; spacing: 12
                 StudioCard { Layout.minimumWidth: Math.max(320,(page.width-61)/2); Layout.maximumWidth: Math.max(320,(page.width-61)/2); Layout.fillHeight: true
                     ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 15
-                        Text { text: "Найти удобные режимы для этого компьютера"; color: Theme.text; font.pixelSize: 20; font.bold: true; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                        Text { text: "Проверим несколько конфигураций и предложим лучшие из измеренных вариантов."; color: Theme.muted; font.pixelSize: 14; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                        Repeater { model: ["Проверить базовую скорость","Сравнить поддерживаемые MTP и Draft","Проверить размеры контекста","Повторить проверку кандидатов"]
+                        Text { text: page.mtpOnly ? "Дополнить замеры ускорением MTP" : "Найти удобные режимы для этого компьютера"; color: Theme.text; font.pixelSize: 20; font.bold: true; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        Text { text: page.mtpOnly ? "Сравним MTP выкл. и Draft 1 / 2 / 4. Подходящие сохранённые замеры используем повторно, выполним только недостающие." : "Проверим несколько конфигураций и предложим лучшие из измеренных вариантов."; color: Theme.muted; font.pixelSize: 14; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        Repeater { model: page.mtpOnly ? ["Найти сопоставимые сохранённые замеры","Проверить недостающие варианты MTP","Добавить результаты в общую историю"] : ["Проверить базовую скорость","Сравнить поддерживаемые MTP и Draft","Проверить размеры контекста","Повторить проверку кандидатов"]
                             Row { required property string modelData; required property int index; spacing: 14
                                 Rectangle { width: 30; height: 30; radius: 15; color: Theme.violet2; border.color: Theme.violet
                                     Text { anchors.centerIn: parent; text: index+1; color: Theme.text; font.pixelSize: 15 }
@@ -148,6 +157,8 @@ Item {
                                 Text { anchors.verticalCenter: parent.verticalCenter; text: modelData; color: Theme.text; font.pixelSize: 14 }
                             }
                         }
+                        Text { text: page.canTestMtp() ? "MTP доступен: сравнение включено в план." : page.v(bridge.selectedModel,"mtp_reason","Выберите модель для проверки поддержки MTP."); color: page.canTestMtp() ? Theme.green : Theme.muted; font.pixelSize: 13; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        Text { visible: page.mtpOnly; text: "Память контекста: " + String(page.v(bridge.draft,"kv_type","f16")).toUpperCase() + ". Остальные параметры — с экрана запуска. Проверка длинного входа здесь не повторяется."; color: Theme.muted; font.pixelSize: 13; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         Item { Layout.fillHeight: true }
                     }
                 }
@@ -158,17 +169,17 @@ Item {
                             Text { text: "Контексты для проверки"; color: Theme.muted; font.pixelSize: 13 }
                             Flow { Layout.fillWidth: true; Layout.preferredHeight: childrenRect.height; spacing: 2
                                 Repeater { model: page.contextChoices
-                                    CheckBox { required property var modelData; text: modelData.label; checked: page.selectedContexts.indexOf(modelData.value)>=0; onToggled: page.toggleContext(modelData.value,checked) }
+                                    CheckBox { required property var modelData; text: modelData.label; checked: page.selectedContexts.indexOf(modelData.value)>=0; enabled: !page.mtpOnly || checked || page.selectedContexts.length<3; onToggled: page.toggleContext(modelData.value,checked) }
                                 }
                             }
                             RowLayout { Layout.fillWidth: true; spacing: 8
                                 Text { text: "Свой контекст"; color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true }
                                 SpinBox { from: 1024; to: 1048576; stepSize: 1024; editable: true; value: page.customContext; onValueModified: page.customContext=value; Layout.preferredWidth: 132 }
-                                StudioButton { text: "Добавить"; buttonHeight: 28; enabled: !page.contextChoices.some(function(c) { return c.value===page.customContext }); onClicked: page.addContext() }
+                                StudioButton { text: "Добавить"; buttonHeight: 28; enabled: (!page.mtpOnly || page.selectedContexts.length<3) && !page.contextChoices.some(function(c) { return c.value===page.customContext }); onClicked: page.addContext() }
                             }
-                            Text { text: "Проверяем только отмеченные контексты."; color: Theme.muted; font.pixelSize: 12 }
-                            CheckBox { text: "Сравнить память контекста: F16 / Q8 / Q4"; checked: page.memoryEconomy; enabled: page.canCompareMemory(); onToggled: page.memoryEconomy=checked }
-                            Text { text: "Сравним типы памяти на базовом и максимальном выбранном контексте. Качество ответов не оцениваем."; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true; visible: page.canCompareMemory() }
+                            Text { text: page.mtpOnly ? "До 3 контекстов за раз, по 4 варианта MTP." : "Проверяем только отмеченные контексты."; color: Theme.muted; font.pixelSize: 12 }
+                            CheckBox { visible: !page.mtpOnly; text: "Сравнить память контекста: F16 / Q8 / Q4"; checked: page.memoryEconomy; enabled: page.canCompareMemory(); onToggled: page.memoryEconomy=checked }
+                            Text { text: "Сравним типы памяти на базовом и максимальном выбранном контексте. Качество ответов не оцениваем."; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true; visible: !page.mtpOnly && page.canCompareMemory() }
                             Text { text: "Без ограничения времени. Можно остановить вручную; готовые замеры сохраняются."; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         }
                     }
@@ -179,7 +190,7 @@ Item {
                             CheckBox { text: "Понимаю влияние на внешние приложения"; checked: page.acknowledge; onToggled: page.acknowledge=checked }
                         }
                     }
-                    StudioButton { text: "Начать исследование"; iconName: "player-play"; primary: true; Layout.fillWidth: true; enabled: page.selectedContexts.length>0 && page.acknowledge && !!page.v(bridge.selectedModel,"id","") && page.v(bridge.selectedModel,"testable",true) && !bridge.busy; onClicked: { bridge.runResearch({contexts:page.selectedContexts,target_context:Math.max.apply(Math,page.selectedContexts),memory_economy:page.memoryEconomy && page.canCompareMemory(),external_use_acknowledged:true}); if (bridge.busy) page.mode="progress" } }
+                    StudioButton { objectName: "startResearchButton"; text: page.mtpOnly ? "Проверить недостающие варианты MTP" : "Начать исследование"; iconName: "player-play"; primary: true; Layout.fillWidth: true; enabled: page.selectedContexts.length>0 && (!page.mtpOnly || (page.canTestMtp() && page.selectedContexts.length<=3)) && page.acknowledge && !!page.v(bridge.selectedModel,"id","") && page.v(bridge.selectedModel,"testable",true) && !bridge.busy; onClicked: { bridge.runResearch({scope:page.mtpOnly ? "mtp" : "full",contexts:page.selectedContexts,target_context:Math.max.apply(Math,page.selectedContexts),memory_economy:!page.mtpOnly && page.memoryEconomy && page.canCompareMemory(),external_use_acknowledged:true}); if (bridge.busy) page.mode="progress" } }
                     StudioButton { text: "Вернуться к запуску"; iconName: "arrow-left"; Layout.fillWidth: true; onClicked: host.navigate(0) }
                     Item { Layout.fillHeight: true }
                 }
@@ -189,7 +200,7 @@ Item {
                     ColumnLayout { anchors.fill: parent; anchors.margins: 16; spacing: 14
                         Text { text: "Этапы исследования"; color: Theme.text; font.pixelSize: 18; font.bold: true }
                         Text { text: page.v(bridge.research,"phase","Идёт исследование"); color: Theme.muted; font.pixelSize: 13; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                        Repeater { model: ["Базовый замер","MTP и Draft","Контекст и память","Итоговые режимы"]
+                        Repeater { model: page.v(bridge.research,"scope","")==="mtp" ? ["Сохранённые замеры","MTP: выкл. / Draft 1, 2, 4","Обновлённые результаты"] : ["Базовый замер","MTP и Draft","Контекст и память","Итоговые режимы"]
                             Row { required property string modelData; required property int index; spacing: 10
                                 StudioIcon { name: "info-circle" }
                                 Text { text: modelData; color: Theme.text; font.pixelSize: 14 }
@@ -214,7 +225,7 @@ Item {
                                 delegate: Rectangle { required property var modelData; width: ListView.view.width; height: 34; color: "transparent"; border.color: Theme.border
                                     RowLayout { anchors.fill: parent; anchors.margins: 6
                                         Text { text: page.contextLabel(page.v(modelData,"context",null)); color: Theme.text; Layout.preferredWidth: 72 }
-                                        Text { text: page.configDetails(page.v(modelData,"config",{})) || page.statusLabel(page.v(modelData,"status","Замер")); color: Theme.muted; Layout.fillWidth: true; elide: Text.ElideRight }
+                                        Text { text: (page.configDetails(page.v(modelData,"config",{})) || page.statusLabel(page.v(modelData,"status","Замер"))) + (modelData.reused ? "  •  из истории" : ""); color: Theme.muted; Layout.fillWidth: true; elide: Text.ElideRight }
                                         Text { text: page.shown(page.v(modelData,"speed",null)," ток/с"); color: Theme.text }
                                     }
                                 }
@@ -311,7 +322,11 @@ Item {
                     }
                 }
             }
-            StudioButton { visible: page.mode==="history" && !page.progressing; text: "Вернуться к исследованию"; iconName: "arrow-left"; onClicked: page.mode="quick" }
+            RowLayout { visible: page.mode==="history" && !page.progressing; Layout.fillWidth: true
+                StudioButton { text: "Вернуться к исследованию"; iconName: "arrow-left"; onClicked: page.mode="quick" }
+                Item { Layout.fillWidth: true }
+                StudioButton { objectName: "mtpResearchHistoryButton"; text: "Исследовать MTP"; iconName: "chart-bar"; onClicked: page.openMtp() }
+            }
             Item { Layout.preferredHeight: 12 }
         }
     }
