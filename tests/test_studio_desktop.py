@@ -215,8 +215,13 @@ class StudioDesktopTests(unittest.TestCase):
             self.assertEqual(sent["scope"], "mtp")
             self.assertEqual(sent["max_configs"], 12)
             self.assertEqual(sent["max_draft"], 4)
+            self.assertTrue(sent["skip_existing"])
             self.assertEqual(sent["contexts"], [32768])
             self.assertTrue(sent["acknowledged_external"])
+            self.studio._pump()
+            self.studio.runResearch({**plan, "skip_existing": False})
+            self.workers.complete("research")
+            self.assertFalse(runner.call_args.args[3]["skip_existing"])
 
     def test_projector_picker_offers_discovered_module_and_cancel_does_not_enable(self):
         model = {"id": "gguf", "backend": "gguf", "path": str(self.root / "model.gguf"), "available": True}
@@ -428,6 +433,26 @@ class StudioDesktopTests(unittest.TestCase):
         self.assertIn(first["id"], report)
         self.assertIn(second["id"], report)
         self.assertNotIn(hidden["id"], report)
+        self.assertNotIn(unrelated["id"], report)
+        self.assertIn("Замеров: 2", self.studio.notice)
+
+    def test_model_report_ignores_job_filters_and_ui_pagination(self):
+        model = self._model()
+        first = self.store.save_result({"model_id": model["id"], "research_id": "first",
+            "status": "completed", "config": {"context": 32768, "backend": "ollama"}})
+        second = self.store.save_result({"model_id": model["id"], "research_id": "second",
+            "status": "error", "config": {"context": 65536, "backend": "ollama"}})
+        unrelated = self.store.save_result({"status": "completed", "config": {"context": 32768}})
+        self.studio._values["results"] = [first]
+        self.studio._history_research_id = "first"
+        with patch("model_studio.desktop.controllers.QGuiApplication.clipboard") as clipboard:
+            self.studio.copyReports({"all_model": True, "research_id": "first",
+                                     "context": "32768", "status": "completed"})
+            self.workers.complete("copy_reports")
+            self.studio._pump()
+        report = clipboard.return_value.setText.call_args.args[0]
+        self.assertIn(first["id"], report)
+        self.assertIn(second["id"], report)
         self.assertNotIn(unrelated["id"], report)
         self.assertIn("Замеров: 2", self.studio.notice)
 

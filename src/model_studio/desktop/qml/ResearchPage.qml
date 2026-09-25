@@ -13,6 +13,7 @@ Item {
     property var selectedContexts: [32768,65536,98304,102400,131072]
     property int customContext: 163840
     property bool memoryEconomy: true
+    property bool skipExisting: true
     property bool acknowledge: false
     readonly property bool mtpOnly: mode==="mtp"
     function canTestMtp() { return (v(bridge.selectedModel,"capabilities",[]) || []).indexOf("mtp")>=0 }
@@ -92,6 +93,7 @@ Item {
                     Text { text: page.progressing ? "Автоматически проверяем конфигурации модели." : page.mode==="history" ? "Просматривайте сохранённые замеры и применяйте лучшие настройки." : "Проверяйте производительность моделей в разных режимах работы."; color: Theme.muted; font.pixelSize: 14 }
                 }
                 Item { Layout.fillWidth: true }
+                StudioButton { objectName: "copyModelReportButton"; text: "Сводка по модели"; iconName: "copy"; enabled: !!page.v(bridge.selectedModel,"id",""); onClicked: bridge.copyModelReport() }
                 StudioButton { text: page.progressing ? "Остановить исследование" : page.mode==="history" ? "Открыть папку отчётов" : "История результатов"; iconName: page.progressing ? "x" : "folder"; danger: page.progressing; onClicked: page.progressing ? stopDialog.open() : page.mode==="history" ? bridge.openReports() : page.mode="history" }
             }
             StudioCard { Layout.fillWidth: true; Layout.preferredHeight: 54
@@ -148,8 +150,8 @@ Item {
                 StudioCard { Layout.minimumWidth: Math.max(320,(page.width-61)/2); Layout.maximumWidth: Math.max(320,(page.width-61)/2); Layout.fillHeight: true
                     ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 15
                         Text { text: page.mtpOnly ? "Дополнить замеры ускорением MTP" : "Найти удобные режимы для этого компьютера"; color: Theme.text; font.pixelSize: 20; font.bold: true; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                        Text { text: page.mtpOnly ? "Сравним MTP выкл. и Draft 1 / 2 / 4. Подходящие сохранённые замеры используем повторно, выполним только недостающие." : "Проверим несколько конфигураций и предложим лучшие из измеренных вариантов."; color: Theme.muted; font.pixelSize: 14; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                        Repeater { model: page.mtpOnly ? ["Найти сопоставимые сохранённые замеры","Проверить недостающие варианты MTP","Добавить результаты в общую историю"] : ["Проверить базовую скорость","Сравнить поддерживаемые MTP и Draft","Проверить размеры контекста","Повторить проверку кандидатов"]
+                        Text { text: page.mtpOnly ? "Сравним MTP выкл. и Draft 1 / 2 / 4 при одинаковых параметрах модели." : "Проверим несколько конфигураций и предложим лучшие из измеренных вариантов."; color: Theme.muted; font.pixelSize: 14; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        Repeater { model: page.mtpOnly ? [page.skipExisting ? "Найти сопоставимые сохранённые замеры" : "Заново проверить скорость без MTP",page.skipExisting ? "Проверить недостающие варианты MTP" : "Заново проверить Draft 1 / 2 / 4","Добавить результаты в общую историю"] : ["Проверить базовую скорость","Сравнить поддерживаемые MTP и Draft","Проверить размеры контекста","Подобрать итоговые режимы"]
                             Row { required property string modelData; required property int index; spacing: 14
                                 Rectangle { width: 30; height: 30; radius: 15; color: Theme.violet2; border.color: Theme.violet
                                     Text { anchors.centerIn: parent; text: index+1; color: Theme.text; font.pixelSize: 15 }
@@ -159,6 +161,10 @@ Item {
                         }
                         Text { text: page.canTestMtp() ? "MTP доступен: сравнение включено в план." : page.v(bridge.selectedModel,"mtp_reason","Выберите модель для проверки поддержки MTP."); color: page.canTestMtp() ? Theme.green : Theme.muted; font.pixelSize: 13; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         Text { visible: page.mtpOnly; text: "Память контекста: " + String(page.v(bridge.draft,"kv_type","f16")).toUpperCase() + ". Остальные параметры — с экрана запуска. Проверка длинного входа здесь не повторяется."; color: Theme.muted; font.pixelSize: 13; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        ColumnLayout { Layout.fillWidth: true; spacing: 2
+                            CheckBox { objectName: "skipExistingResearch"; text: "Пропускать готовые замеры"; checked: page.skipExisting; onToggled: page.skipExisting=checked }
+                            Text { text: page.skipExisting ? "Используем результаты при тех же условиях. Выполним только недостающие проверки." : "Повторим весь выбранный план. Прежние результаты останутся в истории."; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        }
                         Item { Layout.fillHeight: true }
                     }
                 }
@@ -190,7 +196,7 @@ Item {
                             CheckBox { text: "Понимаю влияние на внешние приложения"; checked: page.acknowledge; onToggled: page.acknowledge=checked }
                         }
                     }
-                    StudioButton { objectName: "startResearchButton"; text: page.mtpOnly ? "Проверить недостающие варианты MTP" : "Начать исследование"; iconName: "player-play"; primary: true; Layout.fillWidth: true; enabled: page.selectedContexts.length>0 && (!page.mtpOnly || (page.canTestMtp() && page.selectedContexts.length<=3)) && page.acknowledge && !!page.v(bridge.selectedModel,"id","") && page.v(bridge.selectedModel,"testable",true) && !bridge.busy; onClicked: { bridge.runResearch({scope:page.mtpOnly ? "mtp" : "full",contexts:page.selectedContexts,target_context:Math.max.apply(Math,page.selectedContexts),memory_economy:!page.mtpOnly && page.memoryEconomy && page.canCompareMemory(),external_use_acknowledged:true}); if (bridge.busy) page.mode="progress" } }
+                    StudioButton { objectName: "startResearchButton"; text: page.mtpOnly ? (page.skipExisting ? "Проверить недостающие варианты MTP" : "Повторить исследование MTP") : "Начать исследование"; iconName: "player-play"; primary: true; Layout.fillWidth: true; enabled: page.selectedContexts.length>0 && (!page.mtpOnly || (page.canTestMtp() && page.selectedContexts.length<=3)) && page.acknowledge && !!page.v(bridge.selectedModel,"id","") && page.v(bridge.selectedModel,"testable",true) && !bridge.busy; onClicked: { bridge.runResearch({scope:page.mtpOnly ? "mtp" : "full",skip_existing:page.skipExisting,contexts:page.selectedContexts,target_context:Math.max.apply(Math,page.selectedContexts),memory_economy:!page.mtpOnly && page.memoryEconomy && page.canCompareMemory(),external_use_acknowledged:true}); if (bridge.busy) page.mode="progress" } }
                     StudioButton { text: "Вернуться к запуску"; iconName: "arrow-left"; Layout.fillWidth: true; onClicked: host.navigate(0) }
                     Item { Layout.fillHeight: true }
                 }
@@ -292,7 +298,7 @@ Item {
                         Text { text: "VRAM: " + page.shown(page.v(bridge.selectedResult,"vram_gb",null)," ГБ"); color: Theme.muted; font.pixelSize: 12 }
                     }
                     RowLayout { Layout.fillWidth: true
-                        StudioButton { objectName: "copyAllReportsButton"; text: page.researchFilter ? "Исследование целиком" : "Скопировать все отчёты"; iconName: "copy"; enabled: !!page.researchFilter || !!page.v(bridge.selectedModel,"id",""); onClicked: bridge.copyReports({research_id:page.researchFilter, context:page.contextFilter,status:page.statusFilter,backend:page.backendFilter}) }
+                        StudioButton { objectName: "copyAllReportsButton"; text: page.researchFilter ? "Исследование целиком" : "Отчёты по фильтрам"; iconName: "copy"; enabled: !!page.researchFilter || !!page.v(bridge.selectedModel,"id",""); onClicked: bridge.copyReports({research_id:page.researchFilter, context:page.contextFilter,status:page.statusFilter,backend:page.backendFilter}) }
                         Item { Layout.fillWidth: true }
                         StudioButton { objectName: "copyReportButton"; text: "Скопировать выбранный"; iconName: "copy"; enabled: !!page.v(bridge.selectedResult,"id",""); onClicked: bridge.copyReport() }
                         StudioButton { objectName: "exportReportButton"; text: "Экспортировать…"; iconName: "download"; enabled: !!page.v(bridge.selectedResult,"id",""); onClicked: bridge.exportReport() }

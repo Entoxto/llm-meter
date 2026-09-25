@@ -145,6 +145,92 @@ class ResearchTests(unittest.TestCase):
             self.assertEqual(len(third_session.started), 4)
             self.assertTrue(all(not step.get("reused") for step in third["completed_steps"]))
 
+    def test_skip_existing_false_repeats_full_and_mtp(self):
+        config, mtp_plan, environment, Session = self._mtp_setup()
+        with patch("model_studio.benchmarks.research.environment_snapshot", return_value=environment):
+            first = run_research(Session(), self.store, config, mtp_plan)
+            repeated_session = Session()
+            repeated = run_research(repeated_session, self.store, config,
+                                    {**mtp_plan, "skip_existing": False})
+        self.assertEqual(len(repeated_session.started), 4)
+        self.assertTrue(set(s["result_id"] for s in first["completed_steps"]).isdisjoint(
+                        s["result_id"] for s in repeated["completed_steps"]))
+        with patch("model_studio.benchmarks.research.environment_snapshot", return_value={
+                "backend": "ollama", "runtime_build": "v1", "hardware": "GPU-A",
+                "driver": "D1", "verified": True}), \
+             patch("model_studio.benchmarks.research._long_context_probe",
+                   return_value={"validated": True, "accepted_tokens": 3900}):
+            old = run_research(FakeSession(), self.store, self.config, self.plan)
+            fresh_session = FakeSession()
+            fresh = run_research(fresh_session, self.store, self.config,
+                                 {**self.plan, "skip_existing": False})
+        self.assertEqual(len(fresh_session.started), 2)
+        self.assertTrue(set(s["result_id"] for s in old["completed_steps"]).isdisjoint(
+                        s["result_id"] for s in fresh["completed_steps"]))
+
+    def test_full_reuse_requires_prior_long_proof_when_stage_needs_it(self):
+        environment = {"backend": "ollama", "runtime_build": "v1", "hardware": "GPU-A",
+                       "driver": "D1", "verified": True}
+        with patch("model_studio.benchmarks.research.environment_snapshot", return_value=environment), \
+             patch("model_studio.benchmarks.research._long_context_probe",
+                   return_value={"validated": False, "reason": "probe unavailable"}):
+            old = run_research(FakeSession(), self.store, self.config, self.plan)
+        with patch("model_studio.benchmarks.research.environment_snapshot", return_value=environment), \
+             patch("model_studio.benchmarks.research._long_context_probe",
+                   return_value={"validated": True, "accepted_tokens": 3900}) as probe:
+            session = FakeSession()
+            new = run_research(session, self.store, self.config, self.plan)
+        self.assertEqual([c.context for c in session.started], [4096])
+        self.assertEqual(probe.call_count, 1)
+        self.assertEqual(old["completed_steps"][0]["result_id"], new["completed_steps"][0]["result_id"])
+        self.assertNotEqual(old["completed_steps"][1]["result_id"], new["completed_steps"][1]["result_id"])
+
+    def test_ollama_full_reuses_unavailable_long_proof_without_validating_it(self):
+        environment = {"backend": "ollama", "runtime_build": "v1", "hardware": "GPU-A",
+                       "driver": "D1", "verified": True}
+        unavailable = {"validated": False, "reason": "Runtime tokenization proof unavailable"}
+        with patch("model_studio.benchmarks.research.environment_snapshot", return_value=environment), \
+             patch("model_studio.benchmarks.research._long_context_probe",
+                   return_value=unavailable) as probe:
+            old = run_research(FakeSession(), self.store, self.config, self.plan)
+            session = FakeSession()
+            new = run_research(session, self.store, self.config, self.plan)
+        self.assertEqual(probe.call_count, 1)
+        self.assertEqual(session.started, [])
+        self.assertEqual([s["result_id"] for s in old["completed_steps"]],
+                         [s["result_id"] for s in new["completed_steps"]])
+        self.assertFalse(new["completed_steps"][1]["long_context"]["validated"])
+        self.assertTrue(new["plan"]["skip_existing"])
+
+    def test_full_reuse_resolves_context_after_winning_acceleration(self):
+        config, _, environment, Session = self._mtp_setup()
+        from dataclasses import replace
+        config = replace(config, capabilities=("mtp", "kv-cache"))
+        plan = {"contexts": [2048, 4096], "target_context": 4096,
+                "max_configs": 12, "max_draft": 2, "runs": 2,
+                "memory_economy": True, "acknowledged_external": True}
+        class SpeedSession(Session):
+            def benchmark(self, runs, tokens):
+                result = super().benchmark(runs, tokens)
+                current = self.snapshot["config"]
+                speed = 20 + (current["draft"] * 5 if current["mtp"] else 0)
+                result["summary"]["median_tokens_per_second"] = speed
+                return result
+        proof = {"validated": True, "accepted_tokens": 3900}
+        with patch("model_studio.benchmarks.research.environment_snapshot", return_value=environment), \
+             patch("model_studio.benchmarks.research._long_context_probe", return_value=proof) as probe:
+            old = run_research(SpeedSession(), self.store, config, plan)
+            session = SpeedSession()
+            new = run_research(session, self.store, config, plan)
+        self.assertEqual(old["completed_steps"][-1]["config"]["draft"], 2)
+        self.assertTrue(all(step["config"]["draft"] == 2 for step in old["completed_steps"]
+                            if step["stage"] in ("context", "kv")))
+        self.assertEqual(session.started, [])
+        self.assertGreater(probe.call_count, 0)
+        self.assertTrue(all(s.get("reused") for s in new["completed_steps"]))
+        self.assertTrue({s["result_id"] for s in new["completed_steps"]}.issubset(
+                        s["result_id"] for s in old["completed_steps"]))
+
     def test_mtp_cancel_resume_skips_completed_and_reuses_remaining(self):
         config, plan, environment, Session = self._mtp_setup()
         session = Session()
@@ -179,7 +265,7 @@ class ResearchTests(unittest.TestCase):
         self.assertFalse(failed["comparison_eligible"])
 
     def test_mtp_reuse_rejects_changed_settings_workload_and_actual_config(self):
-        from model_studio.benchmarks.research import _mtp_reusable_results, _artifact
+        from model_studio.benchmarks.research import _reusable_results, _artifact
         config, plan, environment, Session = self._mtp_setup()
         with patch("model_studio.benchmarks.research.environment_snapshot", return_value=environment):
             first = run_research(Session(), self.store, config, plan)
@@ -193,7 +279,7 @@ class ResearchTests(unittest.TestCase):
                 return [self.row]
         artifact = _artifact(self.store, config)
         def reusable(row):
-            return _mtp_reusable_results(OneResult(row), config, [candidate],
+            return _reusable_results(OneResult(row), config, [candidate],
                                          artifact, environment, plan["runs"])
         self.assertEqual(list(reusable(source)), [candidate["key"]])
         legacy = deepcopy(source)
@@ -227,8 +313,13 @@ class ResearchTests(unittest.TestCase):
                          if row["config"]["mtp"] and row["config"]["draft"] == 1)
         changed = deepcopy(on_source)
         changed["config"]["draft"] = 4
-        self.assertEqual(_mtp_reusable_results(OneResult(changed), config, [on_candidate],
+        self.assertEqual(_reusable_results(OneResult(changed), config, [on_candidate],
                                                artifact, environment, plan["runs"]), {})
+        llama_unavailable = deepcopy(source)
+        llama_unavailable["long_context"] = {"validated": False,
+            "reason": "Runtime tokenization proof unavailable"}
+        self.assertEqual(_reusable_results(OneResult(llama_unavailable), config, [candidate],
+                                            artifact, environment, plan["runs"], needs_long=True), {})
 
     def test_unverified_file_is_hashed_before_research_and_old_reports_stay_unverified(self):
         from inventory import fingerprint

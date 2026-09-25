@@ -826,6 +826,7 @@ class Studio(QObject):
         plan.setdefault("contexts", sorted({maximum, *(c for c in (32768, 65536, 98304, 102400, 131072) if c <= maximum)}))
         plan.setdefault("max_configs", 12 if plan.get("memory_economy") or plan.get("scope") == "mtp" else 8)
         plan.setdefault("max_draft", 4)
+        plan.setdefault("skip_existing", True)
         plan.setdefault("acknowledged_external", plan.get("external_use_acknowledged", False))
         plan.update(identity_verified=self.selectedModel.get("identity_verified", False), artifact_digest=self.selectedModel.get("digest"))
         self._research_cancel = threading.Event()
@@ -905,6 +906,15 @@ class Studio(QObject):
         research_id = str(filters.get("research_id") or "")
         def work():
             rows = self.store.results()
+            if filters.get("all_model"):
+                from model_studio.benchmarks.reports import model_report_text
+                if not model.get("id"):
+                    raise ValueError("Выберите модель для сводного отчёта.")
+                rows = [self._result_view(r, models, include_report=False) for r in rows]
+                rows = [r for r in rows if (r.get("display_model_id") or r.get("model_id")) == model["id"]]
+                if not rows:
+                    raise ValueError("Для выбранной модели пока нет сохранённых замеров.")
+                return {"text": model_report_text(rows, str(model.get("name") or "Модель")), "count": len(rows)}
             job = None
             if research_id:
                 job = next((j for j in self.store.research_jobs() if j["id"] == research_id), None)
@@ -930,6 +940,10 @@ class Studio(QObject):
             QGuiApplication.clipboard().setText(result["text"])
             self._update(notice=f"Сводный отчёт скопирован. Замеров: {result['count']}.")
         self._submit("copy_reports", work, copied)
+
+    @Slot()
+    def copyModelReport(self):
+        self.copyReports({"all_model": True})
 
     @Slot()
     def exportReport(self):

@@ -52,6 +52,8 @@ def _validate_plan(config: LaunchConfig, plan: dict) -> tuple[list[int], int, in
         raise ValueError("MTP is not a verified runtime capability")
     if plan.get("scope", "full") not in ("full", "mtp"):
         raise ValueError("Unknown research scope")
+    if type(plan.get("skip_existing", True)) is not bool:
+        raise ValueError("skip_existing must be boolean")
     if plan.get("scope") == "mtp":
         if config.backend != "llama.cpp" or not config.managed or "mtp" not in config.capabilities:
             raise ValueError("MTP research requires a managed llama.cpp runtime with verified MTP capability")
@@ -423,8 +425,9 @@ def _long_context_probe(client, model: str, context: int, stop: threading.Event)
         return {"validated": False, "reason": f"Long-context probe unavailable: {exc}"}
 
 
-def _mtp_reusable_results(store, config: LaunchConfig, candidates: list[dict],
-                          artifact: dict, environment: dict, runs: int) -> dict[str, dict]:
+def _reusable_results(store, config: LaunchConfig, candidates: list[dict],
+                      artifact: dict, environment: dict, runs: int,
+                      needs_long: bool = False) -> dict[str, dict]:
     """Select only complete snapshots from the same artifact, environment and workload."""
     if not environment.get("verified") or not artifact.get("identity_verified"):
         return {}
@@ -471,6 +474,16 @@ def _mtp_reusable_results(store, config: LaunchConfig, candidates: list[dict],
                 or run["tokens"] < 512
                 for run in measured_runs)):
             continue
+        if needs_long:
+            proof = row.get("long_context") or {}
+            validated = (proof.get("validated") is True
+                         and isinstance(proof.get("accepted_tokens"), int))
+            unavailable_ollama = (environment.get("backend") == "ollama"
+                                  and old_env.get("backend") == "ollama"
+                                  and proof.get("validated") is False
+                                  and proof.get("reason") == "Runtime tokenization proof unavailable")
+            if not (validated or unavailable_ollama):
+                continue
         for key, expected in wanted.items():
             requested = row.get("config") or {}
             if key in found or not same_settings(requested, expected):
@@ -490,6 +503,7 @@ def run_research(session, store, config, plan: dict, emit=None,
     config = config if isinstance(config, LaunchConfig) else LaunchConfig.from_dict(config)
     plan = dict(plan)
     plan.pop("budget_minutes", None)  # Old stopped jobs resume without their time limit.
+    plan.setdefault("skip_existing", True)
     contexts, runs, target = _validate_plan(config, plan)
     if config.context not in contexts:
         config = replace(config, context=min(contexts))
@@ -541,14 +555,11 @@ def run_research(session, store, config, plan: dict, emit=None,
     restore_error = None
     completed = {step.get("key"): step for step in job["completed_steps"]
                  if step.get("key") and step.get("status") == "completed"}
-    reusable = (_mtp_reusable_results(store, config, candidates, job["plan"]["artifact"],
-                                      job["plan"]["baseline_environment"], runs)
-                if plan.get("scope") == "mtp" else {})
     speed_candidates = [step for step in completed.values() if step.get("stage") in ("baseline", "acceleration")
                         and step.get("comparison_eligible") and step.get("effective_config_verified")
                         and isinstance(step.get("speed"), (int, float))]
     long_proofs = {step.get("proof_key"): step.get("long_context") for step in completed.values()
-                   if step.get("proof_key") and step.get("long_context")}
+                   if step.get("proof_key") and (step.get("long_context") or {}).get("validated") is True}
     attempted_keys: set[str] = set()
     try:
       with session.research_operation() as lease:
@@ -576,9 +587,21 @@ def run_research(session, store, config, plan: dict, emit=None,
                 if (cancel is not None and cancel.is_set()) or lease.cancel_event.is_set():
                     end_reason = end_reason or "cancelled"
                     break
+                candidate = descriptor["config"]
+                if stage in ("context", "kv") and speed_candidates:
+                    fastest = max(speed_candidates, key=lambda item: item["speed"])
+                    prior = LaunchConfig.from_dict(fastest["config"])
+                    candidate = replace(candidate, mtp=prior.mtp, draft=prior.draft)
+                needs_long = (plan.get("scope") != "mtp" and
+                              (stage in ("context", "kv") or (stage == "baseline" and
+                               not any(c["stage"] == "context" for c in candidates))))
+                reusable = (_reusable_results(store, config, [{**descriptor, "config": candidate}],
+                                              job["plan"]["artifact"],
+                                              job["plan"]["baseline_environment"], runs,
+                                              needs_long=needs_long)
+                            if plan.get("skip_existing", True) else {})
                 if key in reusable:
                     saved = reusable[key]
-                    candidate = descriptor["config"]
                     _emit(emit, "research_progress", {"job_id": job["id"], "index": index,
                                                       "total": len(candidates), "context": candidate.context,
                                                       "stage": stage, "reused": True})
@@ -587,23 +610,22 @@ def run_research(session, store, config, plan: dict, emit=None,
                             "status": "completed", "reused": True,
                             "speed": (saved.get("summary") or {}).get("median_tokens_per_second"),
                             "comparison_eligible": True, "effective_config_verified": True,
+                            "proof_key": json.dumps(candidate.to_dict(), sort_keys=True),
                             "long_context": saved.get("long_context") or {"validated": False,
-                                "reason": "Long input was not verified for this MTP setting"}}
+                                "reason": "Long input was not verified for this setting"}}
                     job = store.update_research(job["id"],
                                                 {"completed_steps": job["completed_steps"] + [step]})
                     completed[key] = step
-                    speed_candidates.append(step)
+                    if (step["long_context"] or {}).get("validated") is True:
+                        long_proofs[step["proof_key"]] = step["long_context"]
+                    if stage in ("baseline", "acceleration") and isinstance(step["speed"], (int, float)):
+                        speed_candidates.append(step)
                     _emit(emit, "research_result", {"job_id": job["id"], "result": saved,
                                                        "reused": True})
                     continue
                 if len(attempted_keys) >= plan.get("max_configs", 12):
                     end_reason = "configuration_limit"
                     break
-                candidate = descriptor["config"]
-                if stage in ("context", "kv") and speed_candidates:
-                    fastest = max(speed_candidates, key=lambda item: item["speed"])
-                    prior = LaunchConfig.from_dict(fastest["config"])
-                    candidate = replace(candidate, mtp=prior.mtp, draft=prior.draft)
                 attempted_keys.add(key)
                 _emit(emit, "research_progress", {"job_id": job["id"], "index": index,
                                                     "total": len(candidates), "context": candidate.context,
@@ -615,18 +637,14 @@ def run_research(session, store, config, plan: dict, emit=None,
                             raise RuntimeError(started.get("error") or "Runtime не запустил конфигурацию")
                         end_reason = "cancelled" if lease.cancel_event.is_set() else "start_failed"
                         break
-                    proof_key = json.dumps({k: candidate.to_dict()[k] for k in
-                                            ("model_id", "context", "mtp", "draft", "kv_type", "gpu_layers",
-                                             "backend", "runtime_name")}, sort_keys=True)
-                    needs_long = (plan.get("scope") != "mtp" and
-                                  (stage in ("context", "kv") or (stage == "baseline" and
-                                   not any(c["stage"] == "context" for c in candidates))))
+                    proof_key = json.dumps(candidate.to_dict(), sort_keys=True)
                     if needs_long and proof_key in long_proofs:
                         long_context = long_proofs[proof_key]
                     elif needs_long and not lease.cancel_event.is_set():
                         long_context = _long_context_probe(lease.client, lease.model_id,
                                                            candidate.context, lease.cancel_event)
-                        long_proofs[proof_key] = long_context
+                        if long_context.get("validated") is True:
+                            long_proofs[proof_key] = long_context
                     else:
                         long_context = {"validated": False, "reason":
                                         "Long input was not verified for this MTP setting" if plan.get("scope") == "mtp"
