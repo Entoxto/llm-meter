@@ -33,6 +33,38 @@ class CatalogTests(unittest.TestCase):
         self.catalog = Catalog(self.store)
         self.settings = {"model_dirs": [str(self.root)], "known_files": []}
 
+    def test_user_alias_survives_scan_and_can_be_reset_without_changing_results(self):
+        self.store.save_settings(self.settings)
+        first = self.catalog.scan(self.settings)[0]
+        verified = self.catalog.hash_model(first["id"])
+        result = self.store.save_result({"model_id": first["id"], "status": "completed"})
+        renamed = self.store.rename_model(first["id"], "  Моя модель  ")
+        self.assertEqual(renamed["name"], "Моя модель")
+        scanned = self.catalog.scan(self.store.settings())[0]
+        for key in ("id", "locator", "path", "digest", "identity_verified"):
+            self.assertEqual(scanned[key], verified[key])
+        self.assertEqual(scanned["name"], "Моя модель")
+        self.assertEqual(self.store.results(first["id"])[0]["id"], result["id"])
+        self.store.rename_model(first["id"], "")
+        self.assertEqual(self.catalog.scan(self.store.settings())[0]["name"], self.model.name)
+
+    def test_ollama_alias_keeps_tag_and_host_scoping(self):
+        from unittest.mock import Mock
+        host = "http://127.0.0.1:11434"
+        client = Mock(host=host)
+        client.list_models.return_value = [{"name": "tag-32k:latest", "digest": "abc"}]
+        self.catalog.ollama_client_factory = lambda _: client
+        settings = {"backend_hosts": {"Ollama": host}}
+        self.store.save_settings(settings)
+        original = self.catalog.scan(settings)[0]
+        self.store.rename_model(original["id"], "Моя LLM")
+        renamed = self.catalog.scan(self.store.settings())[0]
+        self.assertEqual(renamed["name"], "Моя LLM")
+        self.assertEqual(renamed["tag"], "tag-32k:latest")
+        self.assertEqual(renamed["id"], original["id"])
+        self.store.rename_model(original["id"], "")
+        self.assertEqual(self.catalog.scan(self.store.settings())[0]["name"], "tag-32k:latest")
+
     def test_scan_reappear_and_replacement_preserve_historical_identity(self):
         first = self.catalog.scan(self.settings)[0]
         self.assertEqual(first["quantization"], "Q4_K_M")

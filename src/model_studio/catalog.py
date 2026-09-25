@@ -107,7 +107,7 @@ class Catalog:
                         meta = item.get("meta") or {}
                         record = dict(row or {})
                         record.update({"backend": "llama.cpp", "locator": locator,
-                                       "host": client.host, "tag": name, "path": "", "name": name,
+                                       "host": client.host, "tag": name, "path": "", "name": record.get("alias") or name,
                                        "size_bytes": meta.get("size") or item.get("size"),
                                        "context_limit": meta.get("n_ctx"),
                                        "digest": digest, "fingerprint": digest,

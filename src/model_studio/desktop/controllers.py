@@ -253,9 +253,9 @@ class Studio(QObject):
                 self._values["notice"] = "Измерение: " + str(data.get("completed", 0)) + " / " + str(data.get("total", 0))
         if dirty:
             self.changed.emit()
-        if not self._closing and not self.busy and self.session.get("status") == "ready" and time.monotonic() - self._last_telemetry > 2:
+        if not self._closing and not self.busy and self.session.get("status") in SessionController.POLLABLE_STATUSES and time.monotonic() - self._last_telemetry > 2:
             self._last_telemetry = time.monotonic()
-            if "telemetry_poll" not in self._pending:
+            if self.session.get("status") == "ready" and "telemetry_poll" not in self._pending:
                 client = self.core.client
                 def measure():
                     from engine import Telemetry
@@ -565,6 +565,28 @@ class Studio(QObject):
         if model_id == active and self.session.get("status") == "ready":
             self._update(error="Сначала выгрузите эту модель."); return
         self._submit("delete_model", lambda: self.catalog.delete_model(model_id, dict(self.settings)), lambda _: self.refresh(), session=True)
+
+    @Slot(str, str)
+    def renameModel(self, model_id, name):
+        def saved(row):
+            self._values["models"] = [{**m, "name": row["name"], "alias": row["alias"]}
+                                      if m["id"] == model_id else m for m in self.models]
+            if self.selectedModel.get("id") == model_id:
+                self._values["selectedModel"] = {**self.selectedModel, "name": row["name"], "alias": row["alias"]}
+            if (self.session.get("config") or {}).get("model_id") == model_id:
+                self._values["session"] = {**self.session, "model_name": row["name"]}
+            for key in ("results", "researchResults"):
+                self._values[key] = [{**r, "model_name": row["name"]}
+                                     if (r.get("display_model_id") or r.get("model_id")) == model_id else r
+                                     for r in self._values.get(key, [])]
+            if (self.selectedResult.get("display_model_id") or self.selectedResult.get("model_id")) == model_id:
+                self._values["selectedResult"] = {**self.selectedResult, "model_name": row["name"]}
+            self._values["settings"]["model_aliases"] = row.pop("_aliases")
+            self._update(notice="Имя модели сохранено.")
+        def save():
+            row = self.store.rename_model(model_id, name)
+            return {**row, "_aliases": self.store.settings().get("model_aliases", {})}
+        self._submit("rename_model", save, saved)
 
     @Slot(str)
     def verifyModel(self, model_id):

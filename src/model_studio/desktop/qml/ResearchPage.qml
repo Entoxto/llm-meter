@@ -208,6 +208,10 @@ Item {
                         ColumnLayout { anchors.fill: parent; anchors.margins: 13; spacing: 7
                             Text { text: rec ? page.v(rec,"title","") : ["Максимальная скорость","Сбалансированный","Максимальный контекст"][index]; color: Theme.text; font.pixelSize: 14; font.bold: true }
                             Text { text: rec && rec.available ? page.contextLabel(rec.context) + "  •  " + page.shown(rec.speed," ток/с") : "Нет проверенного режима"; color: Theme.muted; font.pixelSize: 15 }
+                            Text { visible: !!rec && !rec.available; text: rec ? rec.reason : ""; color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap; maximumLineCount: 3; elide: Text.ElideRight
+                                ToolTip.visible: recommendationReasonHover.hovered; ToolTip.text: text
+                                HoverHandler { id: recommendationReasonHover }
+                            }
                             Item { Layout.fillHeight: true }
                             StudioButton { visible: !!rec && !!rec.available; text: "Применить для запуска"; iconName: "player-play"; primary: true; Layout.fillWidth: true; onClicked: { bridge.applyRecommendation(modelData); host.navigate(0) } }
                         }

@@ -24,6 +24,7 @@ IMPLEMENTATION.md; не создавайте отсутствующие слои
 | Выбор модели, кнопки и формы | `desktop/controllers.py` → соответствующий `desktop/qml/*Page.qml` | `test_studio_desktop.py` |
 | Запуск/выгрузка, контекст, отмена | `configuration.py`, `session.py`, `backends/`, `platform/windows_process.py` | `test_studio_session.py`, `test_studio_end_to_end.py`, `test_management.py` |
 | Каталог, алиасы, runtime-профиль | `catalog.py`; корневые `inventory.py`, `model_aliases.py`, `runtime_profiles.py` | `test_studio_catalog.py`, `test_management.py` |
+| Пользовательское имя модели | `storage/store.py` (`rename_model`), `desktop/controllers.py` (`renameModel`), `desktop/qml/ModelsPage.qml` | `test_studio_catalog.py`, `test_studio_desktop.py` |
 | Доступность ручных параметров runtime | `backends/capabilities.py`, `desktop/controllers.py` (`_load` → `_profile`) | `test_studio_capabilities.py`, `test_studio_desktop.py`, `test_studio_session.py` |
 | Чат, mmproj, картинки | `chat.py`, `attachments.py`, `backends/images.py`, `desktop/qml/ChatPage.qml` | `test_studio_chat.py`, `test_studio_attachments.py`, `test_studio_vision.py` |
 | Исследование, результаты, рекомендации | `benchmarks/research.py`, `recommendations.py`, `reports.py`; измерительный runner в корневом `engine.py` | `test_studio_research.py`, `test_studio_reports.py`, `test_engine.py`, `test_studio_vision.py` |

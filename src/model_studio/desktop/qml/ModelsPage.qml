@@ -62,7 +62,9 @@ Item {
                             Text { text: page.v(bridge.selectedModel,"available",false) ? page.v(bridge.selectedModel,"testable",true) ? "●  Установлена" : "●  Вспомогательный файл" : "○  Не установлена"; color: page.v(bridge.selectedModel,"available",false) ? Theme.green : Theme.muted; font.pixelSize: 13 }
                             Text { text: "Формат: " + page.v(bridge.selectedModel,"backend","Нет данных") + "  •  Runtime: " + page.v(bridge.selectedModel,"runtime_name","Нет данных"); color: Theme.muted; font.pixelSize: 13 }
                         }
+                        StudioButton { objectName: "renameModelButton"; text: "Переименовать"; subtle: true; enabled: !!page.v(bridge.selectedModel,"id",""); onClicked: { renameDialog.modelId=bridge.selectedModel.id; modelNameField.text=page.v(bridge.selectedModel,"name",""); renameDialog.open() } }
                     }
+                    Text { text: "Исходное имя: " + page.v(bridge.selectedModel,"tag",page.v(bridge.selectedModel,"filename",page.v(bridge.selectedModel,"path","—"))); color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideMiddle }
                     RowLayout { visible: page.v(bridge.selectedModel,"backend","")==="gguf" && Object.keys(page.v(bridge.settings,"runtime_profiles",{})).length>0; Layout.fillWidth: true; spacing: 10
                         Text { text: "Runtime"; color: Theme.text; font.pixelSize: 13 }
                         SearchSelect { Layout.fillWidth: true; entries: page.runtimeEntries(); selectedId: page.v(bridge.selectedModel,"runtime_profile_id",page.v(page.v(bridge.settings,"model_profiles",{}),page.v(bridge.selectedModel,"path",""),"__default__")); placeholder: "Обычный llama.cpp"; iconName: "settings"; onSelected: (id) => bridge.assignRuntime(id==="__default__" ? "" : id) }
@@ -111,6 +113,16 @@ Item {
     }
     Dialog { id: deleteDialog; modal: true; anchors.centerIn: parent; title: "Удалить файл модели?"; standardButtons: Dialog.Yes | Dialog.Cancel; onAccepted: bridge.deleteModel(page.v(bridge.selectedModel,"id",""))
         contentItem: Text { text: "Файл модели будет удалён. История тестов останется."; color: Theme.text; wrapMode: Text.WordWrap }
+        background: Rectangle { color: Theme.panel2; border.color: Theme.border; radius: 6 }
+    }
+    Dialog { id: renameDialog; objectName: "renameModelDialog"; property string modelId: ""; modal: true; anchors.centerIn: parent; width: 440; title: "Имя модели"; standardButtons: Dialog.Save | Dialog.Cancel
+        onOpened: { modelNameField.forceActiveFocus(); modelNameField.selectAll() }
+        onAccepted: bridge.renameModel(modelId, modelNameField.text)
+        contentItem: ColumnLayout { spacing: 12
+            Text { text: "Имя в приложении. Пустое поле вернёт исходное имя."; color: Theme.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            StudioField { id: modelNameField; objectName: "modelNameField"; Layout.fillWidth: true; maximumLength: 120; placeholderText: "Название модели"; onAccepted: renameDialog.accept() }
+            StudioButton { text: "Вернуть исходное имя"; subtle: true; onClicked: modelNameField.text="" }
+        }
         background: Rectangle { color: Theme.panel2; border.color: Theme.border; radius: 6 }
     }
 }

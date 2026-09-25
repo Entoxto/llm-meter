@@ -92,6 +92,18 @@ class StudioDesktopTests(unittest.TestCase):
         self.addCleanup(self.studio._timer.stop)
         self.addCleanup(self.studio.deleteLater)
 
+    def test_disconnected_sessions_keep_polling_without_telemetry(self):
+        self.core.refresh_status = Mock(return_value={"status": "ready"})
+        for status in ("disconnected", "context_changed", "model_unloaded"):
+            self.studio._values["session"] = {"status": status}
+            self.studio._last_telemetry = 0
+            self.studio._pump()
+            self.assertIn("status_poll", self.workers.jobs)
+            self.assertNotIn("telemetry_poll", self.workers.jobs)
+            self.workers.complete("status_poll")
+            self.studio._pump()
+        self.assertEqual(self.core.refresh_status.call_count, 3)
+
     def _model(self):
         row = self.store.upsert_model({"backend": "ollama", "locator": "host/tag",
                                        "host": "http://127.0.0.1:11434", "tag": "tag",
@@ -101,6 +113,19 @@ class StudioDesktopTests(unittest.TestCase):
         self.studio._values["selectedModel"] = row
         self.studio._values["settings"] = {"backend_hosts": {"Ollama": "http://127.0.0.1:11434"}}
         return row
+
+    def test_rename_updates_labels_without_changing_launch_draft(self):
+        model = self._model()
+        self.studio._values["session"] = {"status": "ready", "config": {"model_id": model["id"]}}
+        original_draft = dict(self.studio.draft)
+        self.studio.renameModel(model["id"], "Мой помощник")
+        self.workers.complete("rename_model")
+        self.studio._pump()
+        self.assertEqual(self.studio.selectedModel["name"], "Мой помощник")
+        self.assertEqual(self.studio.session["model_name"], "Мой помощник")
+        self.assertEqual(self.studio.selectedModel["tag"], "tag")
+        self.assertEqual(self.studio.draft, original_draft)
+        self.assertEqual(self.core.started, [])
 
     def test_stale_conversation_callbacks_cannot_overwrite_new_or_newer_selection(self):
         first = self.store.create_conversation("first")

@@ -10,7 +10,7 @@ from pathlib import Path
 import threading
 import uuid
 
-from engine import Cancelled, run_benchmark
+from engine import Cancelled, run_benchmark, selected_resident
 from model_studio.backends.llama_cpp import LlamaCppBackend
 from model_studio.backends.ollama import OllamaBackend
 from model_studio.backends.images import image_mime
@@ -20,6 +20,8 @@ from model_studio.domain import SessionBusy, SessionUnavailable, StreamChunk
 
 
 class SessionController:
+    POLLABLE_STATUSES = ("ready", "disconnected", "context_changed", "model_unloaded")
+
     def __init__(self, logs_dir, emit):
         self.logs_dir = Path(logs_dir)
         self.emit = emit
@@ -141,7 +143,7 @@ class SessionController:
                 raise Cancelled()
             # A changed launch is an explicit replacement. Old owned server is
             # released before starting the next one; a failed launch stays failed.
-            self._release(stop_old=previous_status not in ("disconnected", "failed"))
+            self._release(stop_old=previous_status not in ("disconnected", "failed", "context_changed", "model_unloaded"))
             if stop.is_set():
                 raise Cancelled()
             owned = None
@@ -211,13 +213,13 @@ class SessionController:
         with self._lock:
             owned = self._owned
             if client is not self._client or session_id != self._session_id:
-                return
+                return False
         if owned and not owned.running:
             next_status, reason = "failed", "Owned llama-server exited."
         else:
             try:
                 client.request("/api/version" if client.backend == "ollama" else "/health", timeout=2)
-                return
+                return True
             except Exception as exc:
                 next_status = "failed" if owned else "disconnected"
                 reason = str(exc)
@@ -225,6 +227,7 @@ class SessionController:
             if client is self._client and session_id == self._session_id:
                 self._status, self._error = next_status, reason
         self._state()
+        return False
 
     def unload(self) -> dict:
         with self._lock:
@@ -239,7 +242,7 @@ class SessionController:
                 self._status = "stopping"
             self._state()
             try:
-                self._release(stop_old=previous_status != "disconnected")
+                self._release(stop_old=previous_status not in ("disconnected", "context_changed", "model_unloaded"))
             except Exception as exc:
                 with self._lock:
                     self._status = "failed"
@@ -280,28 +283,37 @@ class SessionController:
             return self._stop
 
     def refresh_status(self) -> dict:
-        """Probe an idle ready session on its worker; report unexpected exit/loss."""
+        """Read-only health checks; recover only after verifying the active context."""
         with self._lock:
-            if self._operation is not None or self._status != "ready":
+            if (self._operation is not None or self._status not in self.POLLABLE_STATUSES
+                    or self._client is None):
                 return self.snapshot
         operation, _ = self._begin()
         try:
             with self._lock:
                 client, session_id, model_id, config = self._client, self._session_id, self._model_id, self._config
-            self._check_connection_after_error(client, session_id)
-            with self._lock:
-                still_ready = self._status == "ready" and client is self._client and session_id == self._session_id
-            if still_ready and client.backend == "ollama":
+            if self._check_connection_after_error(client, session_id):
+                status, error = "ready", None
                 try:
-                    resident = client.resident(model_id)
-                    actual = resident.get("context_length")
-                    if actual != config.context:
-                        raise RuntimeError(f"Ollama context changed to {actual!r}; expected {config.context}.")
+                    if client.backend == "ollama":
+                        resident = selected_resident(client.loaded_models(), model_id)
+                        actual = resident.get("context_length") if resident else None
+                        client.model_info = dict(client.model_info, context_limit=actual)
+                        if resident is None:
+                            status, error = "model_unloaded", "Ollama доступна, но выбранная модель выгружена."
+                        elif actual != config.context:
+                            status = "context_changed"
+                            error = f"Ollama: фактический контекст {actual}, запрошен {config.context}. Запустите модель заново, чтобы применить настройки."
+                    elif self.snapshot["status"] != "ready":
+                        client.prepare(model_id)
+                        actual = client.model_info.get("context_limit")
+                        if actual != config.context:
+                            status, error = "context_changed", f"Контекст сервера {actual}, запрошен {config.context}."
                 except Exception as exc:
-                    with self._lock:
-                        if client is self._client and session_id == self._session_id:
-                            self._status, self._error = "disconnected", str(exc)
-                    self._state()
+                    status, error = "disconnected", str(exc)
+                with self._lock:
+                    if client is self._client and session_id == self._session_id:
+                        self._status, self._error = status, error
         finally:
             self._finish(operation)
         return self.snapshot

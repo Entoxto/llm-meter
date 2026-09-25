@@ -149,6 +149,47 @@ class SessionTests(unittest.TestCase):
             self.session.chat([{"role": "user", "content": "hello"}])
         self.assertEqual(self.session.snapshot["busy"], "idle")
 
+    def test_external_connection_recovers_without_restarting(self):
+        self.start()
+        client = self.session.client
+        client.connected = False
+        self.assertEqual(self.session.refresh_status()["status"], "disconnected")
+        client.connected = True
+        with patch.object(client, "prepare", wraps=client.prepare) as prepare:
+            self.assertEqual(self.session.refresh_status()["status"], "ready")
+            prepare.assert_called_once_with(self.config.model)
+        self.assertIs(self.session.client, client)
+        self.assertIsNone(self.session.snapshot["error"])
+
+    def test_ollama_presence_context_and_connection_are_distinct(self):
+        self.start()
+        client = self.session.client
+        client.backend = "ollama"
+        with patch.object(client, "loaded_models", return_value=[{"name": self.config.model, "context_length": 4096}]) as loaded:
+            self.assertEqual(self.session.refresh_status()["status"], "ready")
+            loaded.return_value = [{"name": self.config.model, "context_length": 32768}]
+            snapshot = self.session.refresh_status()
+            self.assertEqual(snapshot["status"], "context_changed")
+            self.assertEqual(snapshot["effective_context"], 32768)
+            self.assertEqual(snapshot["context"], 4096)
+            with self.assertRaises(RuntimeError):
+                self.session.chat([{"role": "user", "content": "hello"}])
+            loaded.return_value = []
+            self.assertEqual(self.session.refresh_status()["status"], "model_unloaded")
+            client.connected = False
+            self.assertEqual(self.session.refresh_status()["status"], "disconnected")
+            client.connected = True
+            loaded.return_value = [{"name": self.config.model, "context_length": 4096}]
+            self.assertEqual(self.session.refresh_status()["status"], "ready")
+            self.assertIsNone(self.session.snapshot["error"])
+
+    def test_status_poll_does_not_probe_during_an_operation(self):
+        self.start()
+        with patch.object(self.session.client, "request") as request:
+            with self.session.research_operation():
+                self.session.refresh_status()
+            request.assert_not_called()
+
     def test_refresh_marks_unexpected_owned_exit_failed(self):
         self.start()
         class ExitedOwner:

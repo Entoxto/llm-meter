@@ -56,6 +56,7 @@ Item {
                     Text { visible: host.running(); text: page.v(bridge.session,"host",""); color: Theme.muted; font.pixelSize: 12 }
                 }
             }
+            Text { visible: !!page.v(bridge.session,"error",""); text: page.v(bridge.session,"error",""); color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
             ColumnLayout { visible: !page.manual; Layout.fillWidth: true; spacing: 8
                 RowLayout { Layout.fillWidth: true
                     Text { text: "Режим работы"; color: Theme.text; font.pixelSize: 18; font.bold: true; Layout.fillWidth: true }

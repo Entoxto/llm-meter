@@ -173,7 +173,11 @@ class RealTransportTests(unittest.TestCase):
         server.allow_preload = True
         session.start(config)
         server.loaded = False  # Simulate external eviction after startup.
-        self.assertEqual(session.refresh_status()["status"], "disconnected")
+        self.assertEqual(session.refresh_status()["status"], "model_unloaded")
+        server.loaded = True
+        self.assertEqual(session.refresh_status()["status"], "ready")
+        server.loaded = False
+        self.assertEqual(session.refresh_status()["status"], "model_unloaded")
         self.assertEqual(session.unload()["status"], "stopped")
 
     def test_llama_truncated_sse_keeps_healthy_external_session(self):

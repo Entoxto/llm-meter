@@ -174,6 +174,33 @@ class Store:
                 db.execute("INSERT INTO projects(id,path,name,last_used) VALUES (:id,:path,:name,:last_used)", row)
         return row
 
+    def rename_model(self, model_id: str, name: str) -> dict:
+        """Change only the display alias, atomically with legacy alias settings."""
+        from model_aliases import set_alias
+        name = name.strip()
+        if len(name) > 120 or any(ord(c) < 32 for c in name):
+            raise ValueError("Имя должно быть одной строкой длиной до 120 символов.")
+        with self._connection(write=True) as db:
+            saved = db.execute("SELECT payload FROM models WHERE id=?", (model_id,)).fetchone()
+            if saved is None:
+                raise ValueError("Модель больше не найдена в каталоге.")
+            row = _object(saved[0])
+            backend = row["backend"]
+            identifier = row.get("path") or row["locator"] if backend == "gguf" else row.get("tag")
+            original = Path(identifier).name if backend == "gguf" else identifier
+            if not original:
+                raise ValueError("Не найдено исходное имя модели.")
+            saved_settings = db.execute("SELECT payload FROM settings WHERE id=1").fetchone()
+            settings = _object(saved_settings[0]) if saved_settings else {}
+            if backend in ("gguf", "ollama"):
+                set_alias(settings, backend, identifier, name, row.get("host"))
+            row.update(alias=name or None, name=name or original, updated_at=_now())
+            db.execute("UPDATE models SET payload=?,updated_at=? WHERE id=?",
+                       (_json(row), row["updated_at"], model_id))
+            db.execute("INSERT INTO settings(id,payload) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
+                       (_json(settings),))
+        return row
+
     def projects(self) -> list[dict]:
         with self._connection() as db:
             return [dict(r) for r in db.execute("SELECT * FROM projects ORDER BY last_used DESC")]

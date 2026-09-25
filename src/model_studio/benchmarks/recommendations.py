@@ -13,6 +13,14 @@ _CONFIG_KEYS = ("backend", "model", "context", "host", "executable", "managed",
                 "extra_args", "gpu_layers", "kv_type", "reasoning", "reasoning_budget", "mtp", "draft", "mmproj")
 
 
+def _missing_long_context_reason(rows: list[dict]) -> str:
+    for row in rows:
+        if ((row.get("long_context") or {}).get("reason") == "Runtime tokenization proof unavailable"
+                and (row.get("environment") or {}).get("backend") == "ollama"):
+            return "Ollama: проверка длинного входа пока не реализована. Замеры скорости сохранены."
+    return "Нет подтверждённой проверки длинного входа."
+
+
 def _card(key: str, reason: str, row: dict | None = None, current: dict | None = None) -> dict:
     config = row.get("effective_config") or row.get("config") or {} if row else {}
     requested = row.get("config") or config if row else {}
@@ -109,7 +117,7 @@ def recommendations(results: list[dict], current_config: dict | None = None,
         cards.append(_card("context", "Контекст подтверждён длинным входом без усечения.",
                            longest, current_config))
     else:
-        cards.append(_card("context", "Нет подтверждённой проверки длинного входа."))
+        cards.append(_card("context", _missing_long_context_reason(rows)))
     target_rows = [r for r in rows if isinstance((r.get("effective_config") or {}).get("context"), int)
                    and r["effective_config"]["context"] >= target_context
                    and (r.get("long_context") or {}).get("validated") is True]
@@ -122,5 +130,7 @@ def recommendations(results: list[dict], current_config: dict | None = None,
         cards.append(_card("balanced", f"Контекст ≥{target_context}, проверенная память и скорость в пределах 20% от лучшей.",
                            choice, current_config))
     else:
-        cards.append(_card("balanced", "Нет проверки целевого контекста, памяти и скорости в пределах 20% от лучшей."))
+        reason = (_missing_long_context_reason(rows) if not long_proven else
+                  "Нет проверки целевого контекста, памяти и скорости в пределах 20% от лучшей.")
+        cards.append(_card("balanced", reason))
     return cards

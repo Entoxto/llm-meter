@@ -340,6 +340,14 @@ class ResearchTests(unittest.TestCase):
         self.assertFalse(recommendations([unproved])[0]["available"])
         no_long = {**base, "long_context": {"validated": False}}
         self.assertFalse(recommendations([no_long])[1]["available"])
+        ollama = {**no_long, "environment": {**base["environment"], "backend": "ollama"},
+                  "long_context": {"validated": False, "reason": "Runtime tokenization proof unavailable"}}
+        cards = recommendations([ollama])
+        self.assertTrue(cards[0]["available"])
+        for card in cards[1:]:
+            self.assertFalse(card["available"])
+            self.assertIn("Ollama", card["reason"])
+            self.assertIn("пока не реализована", card["reason"])
 
     def test_report_and_exports_omit_full_paths(self):
         result = {"id": "r1", "status": "completed",

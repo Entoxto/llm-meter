@@ -32,7 +32,7 @@ ApplicationWindow {
         if (bridge.busy && val(bridge.research,"status","")==="running") return "Занята исследованием"
         let s=val(bridge.session,"status","stopped")
         if (bridge.busy && s==="ready") return "Занята операцией"
-        return ({ready:root.val(bridge.session,"vision_available",false) ? "Работает · изображения" : "Работает", starting:"Запускается", stopping:"Останавливается", failed:"Ошибка запуска", disconnected:"Нет соединения", stopped:"Сервер остановлен"})[s] || "Состояние неизвестно"
+        return ({ready:root.val(bridge.session,"vision_available",false) ? "Работает · изображения" : "Работает", starting:"Запускается", stopping:"Останавливается", failed:"Ошибка запуска", disconnected:"Нет соединения", context_changed:"Контекст изменён", model_unloaded:"Модель выгружена", stopped:"Сервер остановлен"})[s] || "Состояние неизвестно"
     }
     function statusColor() { let s=val(bridge.session,"status","stopped"); return s==="ready" ? Theme.green : ["failed","disconnected"].indexOf(s)>=0 ? Theme.red : Theme.muted }
     function modelName() { return val(bridge.session,"model_name",val(bridge.selectedModel,"name","Модель не выбрана")) }
