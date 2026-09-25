@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-Status = Literal["stopped", "starting", "ready", "stopping", "failed", "disconnected"]
+Status = Literal["stopped", "starting", "ready", "stopping", "failed", "disconnected", "context_changed", "model_unloaded"]
 Busy = Literal["idle", "chat", "benchmark", "research"]
 
 

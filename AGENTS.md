@@ -29,7 +29,7 @@ IMPLEMENTATION.md; не создавайте отсутствующие слои
 | Чат, mmproj, картинки | `chat.py`, `attachments.py`, `backends/images.py`, `desktop/qml/ChatPage.qml` | `test_studio_chat.py`, `test_studio_attachments.py`, `test_studio_vision.py` |
 | Исследование, результаты, рекомендации | `benchmarks/research.py`, `recommendations.py`, `reports.py`; измерительный runner в корневом `engine.py` | `test_studio_research.py`, `test_studio_reports.py`, `test_engine.py`, `test_studio_vision.py` |
 | БД, миграции, импорт, backup | `storage/store.py`, `platform/paths.py` | `test_studio_storage.py`, `test_studio_attachments.py` |
-| OpenCode и папка проекта | `integrations/opencode.py`, [docs/OPENCODE.md](docs/OPENCODE.md) | `test_studio_opencode.py` |
+| OpenCode, папка проекта и сохранение контекста Ollama | `integrations/opencode.py`, `session.py` (`prepare_external_client`), `backends/ollama.py`, [docs/OPENCODE.md](docs/OPENCODE.md) | `test_studio_opencode.py`, `test_studio_opencode_context.py` |
 
 В таблице пути без `src/model_studio/` относятся к этому пакету, кроме явно
 отмеченных корневых файлов. `desktop/workers.py` выполняет задачи; Qt-мост

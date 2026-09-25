@@ -52,6 +52,7 @@ class SessionController:
                     "effective_context": info.get("context_limit"),
                     "context_source": info.get("context_source"),
                     "vision_available": getattr(client, "vision_available", None),
+                    "model_capabilities": getattr(client, "model_capabilities", None),
                     "backend": config.backend if config else None,
                     "host": client.host if client else (config.host if config else None),
                     "owned": bool(self._owned and self._owned.running),
@@ -200,13 +201,50 @@ class SessionController:
             owned, client, model_id, config = self._owned, self._client, self._model_id, self._config
         if owned:
             owned.stop()
-        elif client is not None and config and config.backend == "ollama" and stop_old:
+        elif client is not None and config and config.backend == "ollama" and (
+                stop_old or client.context_profile == model_id):
             client.unload(model_id)
+        if client is not None and config and config.backend == "ollama":
+            client.delete_context_profile()
         # An external llama-server is only disconnected; Ollama unload affects
         # the selected model through its API and never stops the service.
         with self._lock:
             self._owned = self._client = self._model_id = self._config = None
             self._session_id = None
+
+    def prepare_external_client(self) -> dict:
+        """Pin Ollama defaults before handing a session to an OpenAI API client."""
+        operation, stop = self._begin(require_ready=True)
+        try:
+            with self._lock:
+                client, config, model_id = self._client, self._config, self._model_id
+            if config.backend != "ollama" or client.context_profile == model_id:
+                return self.snapshot
+            profile = client.create_context_profile(config.model)
+            if stop.is_set():
+                raise Cancelled()
+            # Release our original runner before loading the identical weights with
+            # fixed defaults; otherwise both contexts may consume GPU memory.
+            client.unload(model_id)
+            with self._lock:
+                self._model_id = profile
+                self._status = "starting"
+            self._state()
+            client.prepare(profile)
+            client.preload(profile, stop)
+            if stop.is_set():
+                raise Cancelled()
+            with self._lock:
+                self._status, self._error = "ready", None
+            return self.snapshot
+        except BaseException as exc:
+            with self._lock:
+                if self._status == "starting":
+                    self._status = "failed"
+                self._error = "Cancelled" if isinstance(exc, Cancelled) else str(exc)
+            raise
+        finally:
+            self._finish(operation)
 
     def _check_connection_after_error(self, client, session_id):
         """Distinguish a request error from a lost external connection."""

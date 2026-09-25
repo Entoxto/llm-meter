@@ -626,7 +626,9 @@ class Studio(QObject):
         def open_client():
             if self.core.snapshot.get("session_id") != snapshot.get("session_id") or self.core.snapshot.get("status") != "ready":
                 raise RuntimeError("Сессия изменилась. Откройте OpenCode для текущей модели.")
-            return opencode.launch(project, snapshot, configured)
+            prepared = self.core.prepare_external_client()
+            prepared["model_name"] = snapshot.get("model_name")
+            return opencode.launch(project, prepared, configured)
         self._submit("opencode", open_client,
                      lambda _: self._update(notice="OpenCode открыт в выбранной папке."), session=True)
 

@@ -423,3 +423,16 @@ class StudioDesktopTests(unittest.TestCase):
         launch.assert_not_called()
         self.assertFalse(self.studio.busy)
         self.assertIn("Сессия изменилась", self.studio.error)
+
+    def test_opencode_receives_prepared_runtime_profile_instead_of_original_tag(self):
+        self.studio._values["selectedProject"] = {"path": str(self.root)}
+        self.core.snapshot = {"status": "ready", "session_id": "same", "model_id": "original"}
+        self.studio._values["session"] = {**self.core.snapshot, "model_name": "My model"}
+        self.core.prepare_external_client = Mock(return_value={**self.core.snapshot, "model_id": "private-profile"})
+        with patch("model_studio.desktop.controllers.opencode.launch") as launch:
+            self.studio.openOpenCode()
+            self.workers.complete("opencode")
+            self.studio._pump()
+        self.core.prepare_external_client.assert_called_once_with()
+        self.assertEqual(launch.call_args.args[1]["model_id"], "private-profile")
+        self.assertEqual(launch.call_args.args[1]["model_name"], "My model")

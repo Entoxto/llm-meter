@@ -10,6 +10,7 @@ import subprocess
 from uuid import uuid4
 
 from model_studio.platform.paths import data_dir
+from model_studio.backends.ollama import is_context_profile
 
 
 def executable(configured: str = "") -> Path:
@@ -44,6 +45,7 @@ def _session_details(session: dict) -> tuple[str, str, int]:
 
 def connection_config(session: dict, major: int = 2) -> dict:
     model, base_url, context = _session_details(session)
+    name = session.get("model_name") or session.get("model") or model
     output = max(1, min(4096, context // 4))
     if major < 2:
         return {"$schema": "https://opencode.ai/config.json",
@@ -51,22 +53,34 @@ def connection_config(session: dict, major: int = 2) -> dict:
                 "provider": {"studio-local": {
                     "npm": "@ai-sdk/openai-compatible", "name": "Модельная студия",
                     "options": {"baseURL": base_url},
-                    "models": {model: {"name": model, "limit": {
+                    "models": {model: {"name": name, "limit": {
                         "context": context, "output": output}}}}}}
 
     # V2 ignores OPENCODE_CONFIG_CONTENT and uses a plural providers map.
     # Ollama's native provider understands its model metadata and capabilities;
     # llama.cpp exposes OpenAI-compatible /v1 endpoints with an explicit model.
     provider = "ollama" if session.get("backend") == "ollama" else "studio-local"
-    model_info = {"name": model, "limit": {"context": context, "output": output}}
+    # A stable catalog key lets an existing OpenCode conversation follow the new
+    # session profile on its next launch, instead of retaining a deleted UUID tag.
+    catalog_model = str((session.get("config") or {}).get("model") or model) if (
+        provider == "ollama" and is_context_profile(model)) else model
+    model_info = {"name": name, "modelID": model, "limit": {"context": context, "output": output}}
     if provider == "ollama":
-        definition = {"settings": {"baseURL": base_url}, "models": {model: model_info}}
+        capabilities = session.get("model_capabilities")
+        if isinstance(capabilities, list):
+            model_info["capabilities"] = {"tools": "tools" in capabilities,
+                "input": ["text", "image"] if "vision" in capabilities else ["text"],
+                "output": ["text"]}
+        definition = {"package": "@opencode/ai/providers/openai-compatible",
+                      "settings": {"baseURL": base_url}, "models": {catalog_model: model_info}}
+        if catalog_model != model:
+            definition["models"][model] = {"disabled": True}
     else:
         definition = {"name": "Модельная студия",
                       "package": "@opencode/ai/providers/openai-compatible",
                       "settings": {"baseURL": base_url}, "models": {model: model_info}}
     return {"$schema": "https://opencode.ai/config.json",
-            "model": {"providerID": provider, "model": model},
+            "model": {"providerID": provider, "model": catalog_model},
             "providers": {provider: definition}}
 
 

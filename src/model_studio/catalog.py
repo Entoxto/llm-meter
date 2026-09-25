@@ -12,6 +12,7 @@ from inventory import (delete_gguf, delete_ollama, fingerprint, linked,
 from model_aliases import alias_for, display_name
 
 from .storage import Store
+from .backends.ollama import is_context_profile
 
 
 class Catalog:
@@ -68,7 +69,7 @@ class Catalog:
                 inspected_ollama_hosts.add(client.host)
                 for item in items:
                     name = item.get("name")
-                    if not name:
+                    if not name or is_context_profile(name):
                         continue
                     locator = f"{client.host}/{name}"
                     digest = item.get("digest")

@@ -28,6 +28,7 @@ class OpenCodeTests(unittest.TestCase):
         self.assertEqual(config["providers"]["ollama"]["models"]["a/b:q4"]["limit"],
                          {"context": 65536, "output": 4096})
         self.assertNotIn("provider", config)
+        self.assertEqual(config["providers"]["ollama"]["package"], "@opencode/ai/providers/openai-compatible")
 
     def test_v2_llama_cpp_uses_explicit_compatible_provider(self):
         config = connection_config(dict(status="ready", backend="llama.cpp", model="test",

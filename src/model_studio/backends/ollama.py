@@ -2,11 +2,18 @@
 from __future__ import annotations
 
 import threading
+import re
+from uuid import uuid4
 from typing import Iterator
 
 from engine import Client
 from model_studio.backends.images import image_mime
 from model_studio.domain import StreamChunk
+
+
+def is_context_profile(name: str) -> bool:
+    """Reserved, generated session tags; never user-facing model identities."""
+    return bool(re.fullmatch(r"model-studio-session/[0-9a-f]{32}:ctx-[1-9][0-9]*", name))
 
 
 class OllamaBackend:
@@ -18,6 +25,49 @@ class OllamaBackend:
         self.client.reasoning = "auto"
         self.client.keep_alive = -1
         self.vision_available: bool | None = None
+        self.model_capabilities: list[str] = []
+        self.context_profile: str | None = None
+        self._profile_verified = False
+
+    def create_context_profile(self, model: str) -> str:
+        """OpenAI requests cannot set num_ctx: pin it in a private derived tag."""
+        if self.context_profile:
+            if self._profile_verified:
+                return self.context_profile
+            self.delete_context_profile()
+        name = f"model-studio-session/{uuid4().hex}:ctx-{self.client.context}"
+        if any(row.get("name") == name for row in self.client.list_models()):
+            raise RuntimeError("Не удалось выделить уникальный профиль Ollama.")
+        # Track ownership before the request: a timeout may follow successful creation.
+        self.context_profile = name
+        try:
+            return self._create_context_profile(model, name)
+        except Exception:
+            self.delete_context_profile()
+            raise
+
+    def _create_context_profile(self, model: str, name: str) -> str:
+        result = self.client.request("/api/create", {"model": name, "from": model,
+            "parameters": {"num_ctx": self.client.context}, "stream": False}, timeout=60)
+        if result.get("status") != "success":
+            raise RuntimeError("Ollama не подтвердила создание профиля контекста.")
+        info = self.client.request("/api/show", {"model": name}, timeout=15)
+        found = re.search(r"(?m)^num_ctx\s+(\d+)\s*$", info.get("parameters") or "")
+        if not found or int(found.group(1)) != self.client.context:
+            raise RuntimeError("Ollama не сохранила выбранный контекст в профиле OpenCode.")
+        self._profile_verified = True
+        return name
+
+    def delete_context_profile(self) -> None:
+        """Delete only this backend instance's private tag; source is untouched."""
+        if self.context_profile:
+            try:
+                self.client.request("/api/delete", {"model": self.context_profile}, method="DELETE", timeout=15)
+            except RuntimeError as exc:
+                if "HTTP 404:" not in str(exc):
+                    raise
+            self.context_profile = None
+            self._profile_verified = False
 
     def __getattr__(self, name):
         return getattr(self.client, name)
@@ -46,6 +96,7 @@ class OllamaBackend:
                 raise ValueError(f"Ollama model does not confirm reasoning={self.client.reasoning} support.")
         show = self.client.request("/api/show", {"model": model}, timeout=15)
         capabilities = show.get("capabilities")
+        self.model_capabilities = list(capabilities) if isinstance(capabilities, list) else []
         self.vision_available = ("vision" in capabilities) if isinstance(capabilities, list) else None
         return result
 
