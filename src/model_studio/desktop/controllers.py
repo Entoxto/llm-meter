@@ -250,7 +250,7 @@ class Studio(QObject):
                 if errors:
                     self._values["error"] = "\n\n".join(errors)
             elif event == "progress":
-                self._values["notice"] = "Измерение: " + str(data.get("completed", 0)) + " / " + str(data.get("total", 0))
+                self._values["notice"] = data.get("message") or ("Измерение: " + str(data.get("completed", 0)) + " / " + str(data.get("total", 0)))
         if dirty:
             self.changed.emit()
         if not self._closing and not self.busy and self.session.get("status") in SessionController.POLLABLE_STATUSES and time.monotonic() - self._last_telemetry > 2:
@@ -329,8 +329,16 @@ class Studio(QObject):
     def _reload_history(self):
         def load():
             return {"results": self.store.results(limit=200), "conversations": self.store.conversations(limit=200),
-                    "researchJobs": self.store.research_jobs()}
+                    "researchJobs": self.store.research_jobs(), "catalogModels": self.store.models()}
         def done(value):
+            fresh = value.pop("catalogModels")
+            def updated(model):
+                row = next((r for r in fresh if r["id"] == model.get("id")), None)
+                if row is None and model.get("path"):
+                    row = next((r for r in fresh if r.get("path") == model["path"]), None)
+                return {**model, **row} if row else model
+            self._values["models"] = [updated(m) for m in self._values["models"]]
+            self._values["selectedModel"] = updated(self._values["selectedModel"])
             value["results"] = [self._result_view(r) for r in value["results"]]
             self._values.update(value)
             self._values.update(hasMoreResults=len(value["results"]) == 200, hasMoreConversations=len(value["conversations"]) == 200)
@@ -441,7 +449,9 @@ class Studio(QObject):
             config = self._config().to_dict()
             digest = self.selectedModel.get("digest") if self.selectedModel.get("identity_verified") else None
             comparable = [r for r in self.results if digest and (r.get("artifact") or {}).get("digest") == digest]
-            self._values["recommendations"] = recommendations(comparable, config, current_environment=self._environment)
+            unverified = [r for r in self.results if r.get("model_id") == config.get("model_id")
+                          and not (r.get("artifact") or {}).get("digest")]
+            self._values["recommendations"] = recommendations([*comparable, *unverified], config, current_environment=self._environment)
             for result in comparable:
                 requested = result.get("config") or result.get("effective_config") or {}
                 environment = result.get("environment") or {}
@@ -765,19 +775,25 @@ class Studio(QObject):
             config = self._config()
         except (ValueError, TypeError) as exc:
             self._update(error=str(exc)); return
-        model = dict(self.selectedModel)
         def work():
-            self.core.start(config)
+            from model_studio.benchmarks.research import prepare_result, verify_benchmark_model
+            self._session_event("progress", {"message": "Проверка файла модели перед тестом…"})
+            verified = verify_benchmark_model(self.store, config, self._research_cancel)
+            if self._research_cancel.is_set():
+                return None
+            self.core.start(verified)
             if self.core.snapshot["status"] != "ready":
                 return None
-            from model_studio.benchmarks.research import prepare_result
-            result = prepare_result(self.store, config, self.core.benchmark(), client=self.core.client)
+            result = prepare_result(self.store, verified, self.core.benchmark(), client=self.core.client)
             return self.store.save_result(result)
         def done(result):
             if result:
                 self._update(selectedResult=self._result_view(result), notice="Результат теста сохранён.")
             self._reload_history()
-        self._apply_or_confirm(config, lambda: self._submit("benchmark", work, done, session=True))
+        def begin():
+            self._research_cancel = threading.Event()
+            self._submit("benchmark", work, done, session=True)
+        self._apply_or_confirm(config, begin)
 
     @Slot("QVariantMap")
     def runResearch(self, plan):

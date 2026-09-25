@@ -283,6 +283,28 @@ class StudioDesktopTests(unittest.TestCase):
         self.studio._pump()
         self.assertEqual(self.studio.results[0]["model_id"], model["id"])
 
+    def test_history_refresh_updates_selected_identity_without_resetting_draft(self):
+        model = self._model()
+        digest = model["digest"]
+        self.studio._values["selectedModel"].update(digest=None, identity_verified=False)
+        self.studio._values["draft"]["context"] = 98304
+        self.studio._reload_history()
+        self.workers.complete("history")
+        self.studio._pump()
+        self.assertTrue(self.studio.selectedModel["identity_verified"])
+        self.assertEqual(self.studio.selectedModel["digest"], digest)
+        self.assertEqual(self.studio.draft["context"], 98304)
+
+    def test_quick_benchmark_cannot_start_before_identity_verification(self):
+        self._model()
+        with patch("model_studio.benchmarks.research.verify_benchmark_model", side_effect=ValueError("identity missing")):
+            self.studio.runBenchmark()
+            self.workers.complete("benchmark")
+        self.studio._pump()
+        self.assertEqual(self.core.started, [])
+        self.assertEqual(self.store.results(), [])
+        self.assertIn("identity missing", self.studio.error)
+
     def test_settings_aliases_are_normalized_before_persistence(self):
         self.studio._values["settings"] = {"backend_hosts": {"Ollama": "old", "llama.cpp": "old"}}
         self.studio.saveSettings({"ollama_host": "http://127.0.0.1:11435",

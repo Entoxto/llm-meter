@@ -18,6 +18,9 @@ def _missing_long_context_reason(rows: list[dict]) -> str:
         if ((row.get("long_context") or {}).get("reason") == "Runtime tokenization proof unavailable"
                 and (row.get("environment") or {}).get("backend") == "ollama"):
             return "Ollama: проверка длинного входа пока не реализована. Замеры скорости сохранены."
+    if any("лимит" in str((r.get("long_context") or {}).get("reason", "")).lower()
+           or "timeout" in str((r.get("long_context") or {}).get("reason", "")).lower() for r in rows):
+        return "Проверка длинного входа не уложилась в лимит времени. Замеры скорости сохранены."
     return "Нет подтверждённой проверки длинного входа."
 
 
@@ -99,6 +102,10 @@ def recommendations(results: list[dict], current_config: dict | None = None,
         groups[key].append(row)
     if not groups:
         reason = "Нет сопоставимых проверенных результатов: нужны digest модели, среда, применённые настройки и методика."
+        relevant = [r for r in results if not current_config or r.get("model_id") == current_config.get("model_id")]
+        if relevant and all(not (r.get("artifact") or {}).get("identity_verified")
+                            or not (r.get("artifact") or {}).get("digest") for r in relevant):
+            reason = "Замеры выполнены до проверки файла модели. Они сохранены; для режимов нужен новый тест после проверки."
         return [_card(key, reason) for key in _TITLES]
     # Prefer the group containing an exact current configuration, then the
     # largest evidence set. Never compare speeds across different groups.

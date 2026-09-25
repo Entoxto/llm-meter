@@ -6,11 +6,31 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from engine import Cancelled, Client, CONTEXT, GIB, normalize_host, placement, run_benchmark, gpu_summary
 from llama_cpp import LlamaCppClient, log_memory
+
+
+class StreamDeadlineTests(unittest.TestCase):
+    def test_default_and_extended_timeout_keep_cancellation(self):
+        from engine import InterruptibleReader
+        sock = Mock()
+        sock.recv_into.return_value = 1
+        stop = threading.Event()
+        cancelled = threading.Event()
+        default = InterruptibleReader(sock, stop, cancelled, 0)
+        extended = InterruptibleReader(sock, stop, cancelled, 0, timeout=900)
+        self.addCleanup(default.close)
+        self.addCleanup(extended.close)
+        with patch("engine.time.perf_counter", return_value=301):
+            with self.assertRaisesRegex(RuntimeError, "300"):
+                default.readinto(bytearray(1))
+            self.assertEqual(extended.readinto(bytearray(1)), 1)
+            stop.set()
+            with self.assertRaises(Cancelled):
+                extended.readinto(bytearray(1))
 
 
 class Fixture:

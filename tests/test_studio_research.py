@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -78,6 +79,71 @@ class FakeSession:
 
 
 class ResearchTests(unittest.TestCase):
+    def test_unverified_file_is_hashed_before_research_and_old_reports_stay_unverified(self):
+        from inventory import fingerprint
+        from dataclasses import replace
+        path = self.root / "model.gguf"
+        path.write_bytes(b"test model content")
+        row = self.store.upsert_model({"backend": "gguf", "locator": str(path), "path": str(path),
+                                       "name": path.name, "fingerprint": list(fingerprint(path)),
+                                       "identity_verified": False})
+        config = replace(self.config, model=str(path), model_id=row["id"])
+        old = self.store.save_result({"model_id": row["id"], "status": "completed",
+                                      "artifact": {"identity_verified": False, "digest": None}})
+        session = FakeSession()
+        original = session.start
+        def checked_start(candidate):
+            stored = next(m for m in self.store.models() if m["id"] == candidate.model_id)
+            self.assertTrue(stored["identity_verified"])
+            self.assertTrue(stored["digest"])
+            return original(candidate)
+        session.start = checked_start
+        job = run_research(session, self.store, config, self.plan)
+        self.assertEqual(job["status"], "completed")
+        self.assertTrue(job["plan"]["artifact_digest"])
+        self.assertTrue(job["plan"]["identity_verified"])
+        retained = next(r for r in self.store.results() if r["id"] == old["id"])
+        self.assertFalse(retained["artifact"]["identity_verified"])
+        self.assertIn("до проверки файла", recommendations([retained])[0]["reason"])
+
+    def test_hash_cancellation_and_changed_file_do_not_start_research(self):
+        from inventory import fingerprint
+        from dataclasses import replace
+        path = self.root / "model.gguf"
+        path.write_bytes(b"content")
+        row = self.store.upsert_model({"backend": "gguf", "locator": str(path), "path": str(path),
+                                       "name": path.name, "fingerprint": list(fingerprint(path)),
+                                       "identity_verified": False})
+        config = replace(self.config, model=str(path), model_id=row["id"])
+        session = FakeSession()
+        cancel = threading.Event(); cancel.set()
+        with self.assertRaises(InterruptedError):
+            run_research(session, self.store, config, self.plan, cancel=cancel)
+        path.write_bytes(b"different content")
+        with self.assertRaisesRegex(ValueError, "Файл модели изменился"):
+            run_research(session, self.store, config, self.plan)
+        self.assertEqual(session.started, [])
+        self.assertEqual(self.store.research_jobs(), [])
+
+    def test_long_probe_uses_research_deadline_and_restores_timeout_on_error(self):
+        from model_studio.benchmarks.research import _long_context_probe
+        from types import SimpleNamespace
+        transport = SimpleNamespace(stream_timeout=300)
+        class Probe:
+            backend = "llama.cpp"
+            client = transport
+            def request(self, *args, **kwargs):
+                return {"n_tokens": 60000}
+            def generate(self, *args):
+                self.observed_timeout = self.client.stream_timeout
+                raise RuntimeError("probe failed")
+        probe = Probe()
+        with patch("model_studio.benchmarks.research._token_count", return_value=64000):
+            result = _long_context_probe(probe, "model", 65536, threading.Event(), time.monotonic() + 900)
+        self.assertFalse(result["validated"])
+        self.assertGreater(probe.observed_timeout, 850)
+        self.assertEqual(transport.stream_timeout, 300)
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

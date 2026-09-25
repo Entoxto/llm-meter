@@ -37,9 +37,10 @@ class Cancelled(Exception):
 
 class InterruptibleReader(io.RawIOBase):
     """Retry short socket waits without poisoning a socket.makefile buffer."""
-    def __init__(self, sock, stop, cancelled, started):
+    def __init__(self, sock, stop, cancelled, started, timeout=300):
         super().__init__()
         self.sock, self.stop, self.cancelled, self.started = sock, stop, cancelled, started
+        self.timeout = timeout
         # Keep the descriptor alive when HTTPConnection handles Connection: close.
         self.owner = sock.makefile("rb", buffering=0)
 
@@ -50,8 +51,8 @@ class InterruptibleReader(io.RawIOBase):
         while True:
             if self.stop.is_set() or self.cancelled.is_set():
                 raise Cancelled()
-            if time.perf_counter() - self.started > 300:
-                raise RuntimeError("Запрос превысил лимит 300 секунд.")
+            if time.perf_counter() - self.started > self.timeout:
+                raise RuntimeError(f"Запрос превысил лимит {self.timeout:g} секунд.")
             try:
                 return self.sock.recv_into(buffer)
             except socket.timeout:
@@ -63,9 +64,9 @@ class InterruptibleReader(io.RawIOBase):
 
 
 class InterruptibleResponse(http.client.HTTPResponse):
-    def __init__(self, sock, stop, cancelled, started, **kwargs):
+    def __init__(self, sock, stop, cancelled, started, timeout=300, **kwargs):
         super().__init__(sock, **kwargs)
-        reader = InterruptibleReader(sock, stop, cancelled, started)
+        reader = InterruptibleReader(sock, stop, cancelled, started, timeout)
         self.fp.close()
         self.fp = io.BufferedReader(reader)
         sock.settimeout(.25)
@@ -101,6 +102,7 @@ class Client:
         self.host = normalize_host(host, self.default_port)
         self.local = urlsplit(self.host).hostname in ("localhost", "127.0.0.1", "::1")
         self._cancelled = threading.Event()
+        self.stream_timeout = 300
         self.model_info = {}
         # Local requests must not be routed through a system HTTP proxy.
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -170,7 +172,7 @@ class Client:
         started = time.perf_counter()
         self._cancelled.clear()
         conn.response_class = lambda sock, **kw: InterruptibleResponse(
-            sock, stop, self._cancelled, started, **kw)
+            sock, stop, self._cancelled, started, timeout=self.stream_timeout, **kw)
         try:
             conn.connect()
             if stop.is_set():

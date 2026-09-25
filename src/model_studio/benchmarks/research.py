@@ -113,6 +113,23 @@ def _artifact(store, config: LaunchConfig) -> dict:
             "projector": projector}
 
 
+def verify_benchmark_model(store, config: LaunchConfig, cancel=None) -> LaunchConfig:
+    """Finish identity verification before spending time on measurements."""
+    from model_studio.catalog import Catalog
+    from inventory import fingerprint
+    row = next((r for r in store.models() if r["id"] == config.model_id), None)
+    if row is None:
+        raise ValueError("Модель отсутствует в каталоге. Обновите список моделей.")
+    if row.get("backend") == "gguf":
+        if row.get("fingerprint") and list(fingerprint(Path(config.model))) != row["fingerprint"]:
+            raise ValueError("Файл модели изменился. Обновите каталог перед тестом.")
+        if not row.get("identity_verified") or not row.get("digest"):
+            row = Catalog(store).hash_model(row["id"], cancel)
+    if not row.get("identity_verified") or not row.get("digest"):
+        raise ValueError("Не удалось подтвердить файл модели. Тест не начат.")
+    return replace(config, model_id=row["id"])
+
+
 def _gpu_signature() -> tuple[str | None, str | None]:
     executable = shutil.which("nvidia-smi")
     if not executable:
@@ -255,6 +272,8 @@ def prepare_result(store, config, measured: dict, plan: dict | None = None, clie
     options = measured.get("options") or {"temperature": 0, "seed": 42}
     warnings = list(measured.get("warnings") or [])
     blocking_reasons = []
+    if not artifact.get("identity_verified") or not artifact.get("digest"):
+        blocking_reasons.append("Файл модели не был проверен до замера")
     if config.mmproj and (not selected_projector or not selected_projector.get("identity_verified")
                           or loaded_projector != selected_projector):
         blocking_reasons.append("Vision projector identity or active attachment is unverified")
@@ -362,7 +381,15 @@ def _long_context_probe(client, model: str, context: int, stop: threading.Event,
             return {"validated": False, "reason": "Could not size long input safely"}
         if stop.is_set() or time.monotonic() >= deadline:
             raise InterruptedError("Long-context probe cancelled")
-        measured = client.generate(model, prompt, reserve, stop)
+        transport = getattr(client, "client", client)
+        previous_timeout = getattr(transport, "stream_timeout", 300)
+        try:
+            # Long prompt processing uses the user's research deadline, not the
+            # ordinary five-minute limit. The research watcher still cancels it.
+            transport.stream_timeout = max(.1, deadline - time.monotonic())
+            measured = client.generate(model, prompt, reserve, stop)
+        finally:
+            transport.stream_timeout = previous_timeout
         reported = measured.get("prompt_tokens")
         processed = measured.get("prompt_processed_tokens")
         cached = measured.get("prompt_cached_tokens")
@@ -393,6 +420,10 @@ def run_research(session, store, config, plan: dict, emit=None,
     config = config if isinstance(config, LaunchConfig) else LaunchConfig.from_dict(config)
     plan = dict(plan)
     contexts, minutes, runs, target = _validate_plan(config, plan)
+    _emit(emit, "progress", {"message": "Проверка файла модели перед исследованием…"})
+    config = verify_benchmark_model(store, config, cancel)
+    verified_artifact = _artifact(store, config)
+    plan.update(identity_verified=verified_artifact["identity_verified"], artifact_digest=verified_artifact["digest"])
     plan["contexts"] = contexts
     plan["target_context"] = target
     candidates = plan_candidates(config, plan)
