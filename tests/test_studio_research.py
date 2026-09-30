@@ -1,4 +1,6 @@
 from contextlib import contextmanager
+from agent_fixtures import agent_measurement
+from model_studio.benchmarks.agent import METHOD, OUTPUT_TOKENS
 from copy import deepcopy
 from pathlib import Path
 import json
@@ -55,12 +57,13 @@ class FakeSession:
         self.snapshot = {"status": "ready", "config": config.to_dict()}
         return self.snapshot
 
-    def benchmark(self, runs, tokens):
+    def benchmark(self, runs, tokens=OUTPUT_TOKENS):
         result = {"status": "completed", "session_id": "session", "runtime_model_id": self.model_id,
                   "runs": [{"index": i, "tokens": tokens, "generation_seconds": 20.48,
                              "tokens_per_second": 25.0}
                            for i in range(1, runs + 1)],
                   "summary": {"median_tokens_per_second": 25.0}, "warnings": []}
+        result.update(agent_measurement(runs))
         if self.after_benchmark:
             self.after_benchmark()
         return result
@@ -95,7 +98,7 @@ class ResearchTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.client.backend = "llama.cpp"
-            def benchmark(self, runs, tokens):
+            def benchmark(self, runs, tokens=OUTPUT_TOKENS):
                 result = super().benchmark(runs, tokens)
                 result.update(requested_runs=runs, requested_tokens_per_run=tokens)
                 if self.snapshot["config"]["mtp"]:
@@ -210,11 +213,11 @@ class ResearchTests(unittest.TestCase):
                 "max_configs": 12, "max_draft": 2, "runs": 2,
                 "memory_economy": True, "acknowledged_external": True}
         class SpeedSession(Session):
-            def benchmark(self, runs, tokens):
+            def benchmark(self, runs, tokens=OUTPUT_TOKENS):
                 result = super().benchmark(runs, tokens)
                 current = self.snapshot["config"]
                 speed = 20 + (current["draft"] * 5 if current["mtp"] else 0)
-                result["summary"]["median_tokens_per_second"] = speed
+                result["summary"]["median_scenario_seconds"] = 1000 / speed
                 return result
         proof = {"validated": True, "accepted_tokens": 3900}
         with patch("model_studio.benchmarks.research.environment_snapshot", return_value=environment), \
@@ -385,6 +388,34 @@ class ResearchTests(unittest.TestCase):
         self.assertFalse(result["validated"])
         self.assertIsNone(probe.observed_timeout)
         self.assertEqual(transport.stream_timeout, 300)
+
+    def test_long_probe_accepts_managed_roundup_and_rejects_external_mismatch(self):
+        from dataclasses import replace
+        from model_studio.benchmarks.research import _long_context_probe
+        class Probe:
+            backend = "llama.cpp"
+            stream_timeout = 300
+            actual = 33024
+            def request(self, *args, **kwargs):
+                return {"n_tokens": 32500}
+            def generate(self, *args):
+                return {"prompt_tokens": 32500, "prompt_processed_tokens": 32500,
+                        "prompt_cached_tokens": 0, "output_tokens": 16}
+            def resident(self, *args):
+                return {"context_length": self.actual}
+        config = LaunchConfig(model="model.gguf", executable="server.exe", context=33000)
+        probe = Probe()
+        for managed, actual, expected in ((True, 33024, True), (True, 33255, True),
+                                          (True, 33256, False), (True, 32999, False),
+                                          (False, 33024, False), (False, 33000, True)):
+            with self.subTest(managed=managed, actual=actual):
+                candidate = replace(config, managed=managed, executable="server.exe" if managed else "")
+                probe.actual = actual
+                proof = _long_context_probe(probe, "runtime", candidate.context,
+                                            threading.Event(), config=candidate)
+                self.assertEqual(proof["validated"], expected)
+                self.assertEqual(proof["observed_context"], actual)
+                self.assertEqual(probe.stream_timeout, 300)
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -563,10 +594,10 @@ class ResearchTests(unittest.TestCase):
                     raise RuntimeError("KV type unsupported by this runtime")
                 return super().start(config)
 
-            def benchmark(self, runs, tokens):
+            def benchmark(self, runs, tokens=OUTPUT_TOKENS):
                 measured = super().benchmark(runs, tokens)
                 on = self.snapshot["config"]["mtp"]
-                measured["summary"]["median_tokens_per_second"] = 35 if on else 20
+                measured["summary"]["median_scenario_seconds"] = 20 if on else 35
                 for run in measured["runs"]:
                     run["draft_n"] = 10 if on else 0
                 return measured
@@ -592,15 +623,10 @@ class ResearchTests(unittest.TestCase):
 
     def test_research_uses_best_verified_acceleration_for_context(self):
         class SpeedSession(FakeSession):
-            def benchmark(self, runs, tokens):
+            def benchmark(self, runs, tokens=OUTPUT_TOKENS):
                 on = self.snapshot["config"]["mtp"]
                 speed = 35.0 if on else 20.0
-                return {"status": "completed", "session_id": "session", "runtime_model_id": self.model_id,
-                        "requested_runs": runs, "requested_tokens_per_run": tokens,
-                        "runs": [{"index": i, "tokens": tokens, "generation_seconds": tokens / speed,
-                                  "tokens_per_second": speed,
-                                  "draft_n": 10 if on else None} for i in range(1, runs + 1)],
-                        "summary": {"median_tokens_per_second": speed}, "warnings": []}
+                return agent_measurement(runs, duration=1000/speed, speed=speed, draft=10 if on else None)
 
         model = self.store.upsert_model({"backend": "gguf", "locator": "test.gguf",
                                          "name": "test", "digest": "abc",
@@ -636,6 +662,7 @@ class ResearchTests(unittest.TestCase):
                               "tokens_per_second": 25.0}
                              for i in range(1, 4)],
                     "summary": {"median_tokens_per_second": 25.0}}
+        measured.update(agent_measurement(3))
         with patch("model_studio.benchmarks.research._gpu_signature", return_value=("GPU-A:1000MiB", "D1")):
             snapshot = prepare_result(self.store, self.config, measured)
         self.assertTrue(snapshot["environment"]["verified"])
@@ -707,6 +734,7 @@ class ResearchTests(unittest.TestCase):
                     "summary": {"median_tokens_per_second": 51.2}}
         environment = {"backend": "llama.cpp", "runtime_build": "v1", "hardware": "GPU-A",
                        "driver": "D1", "verified": True}
+        measured.update(agent_measurement())
         with patch("model_studio.benchmarks.research.environment_snapshot", return_value=environment):
             result = prepare_result(self.store, config, measured)
         self.assertTrue(result["comparison_eligible"])
@@ -726,8 +754,8 @@ class ResearchTests(unittest.TestCase):
                 "effective_config_verified": True,
                 "comparison_eligible": True,
                 "effective_config": {**self.config.to_dict(), "context": 4096},
-                "workload": {"method": "studio-short-v1", "signature": "same"},
-                "summary": {"median_tokens_per_second": 25.0},
+                "workload": {"method": METHOD, "signature": "same"},
+                "summary": {"median_tokens_per_second": 25.0, "median_scenario_seconds": 30},
                 "memory": {"vram_bytes": 1000},
                 "long_context": {"validated": True, "accepted_tokens": 3900}}
         incomparable = {**base, "id": "other", "summary": {"median_tokens_per_second": 999},

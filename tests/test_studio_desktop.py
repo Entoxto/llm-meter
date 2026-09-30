@@ -170,7 +170,7 @@ class StudioDesktopTests(unittest.TestCase):
         self.studio._values["results"] = [{"id": "saved", "model_id": "gguf", "status": "completed",
             "config": {**config.to_dict(), "capabilities": [], "runtime_name": "old name"},
             "artifact": {"digest": "abc"}, "environment": env,
-            "effective_config_verified": True, "comparison_eligible": True}]
+            "workload": {"method": "studio-agent-v1"}, "effective_config_verified": True, "comparison_eligible": True}]
         self.studio._refresh_recommendations()
         self.assertEqual(self.studio.matchingResult["id"], "saved")
 
@@ -223,6 +223,34 @@ class StudioDesktopTests(unittest.TestCase):
             self.workers.complete("research")
             self.assertFalse(runner.call_args.args[3]["skip_existing"])
 
+    def test_empty_research_contexts_do_not_start_a_worker_or_model(self):
+        self._model()
+        self.studio.runResearch({"contexts": [], "external_use_acknowledged": True})
+        self.assertIn("Выберите хотя бы один контекст", self.studio.error)
+        self.assertNotIn("research", self.workers.jobs)
+        self.assertFalse(self.studio.busy)
+        self.assertEqual(self.core.started, [])
+
+    def test_qml_number_context_reaches_research_as_integer(self):
+        from PySide6.QtQml import QJSEngine
+        from model_studio.configuration import LaunchConfig
+        engine = QJSEngine()
+        engine.setObjectOwnership(self.studio, QJSEngine.ObjectOwnership.CppOwnership)
+        engine.globalObject().setProperty("studio", engine.newQObject(self.studio))
+        config = LaunchConfig(model="model", model_id="id", executable="server",
+                              capabilities=("mtp",))
+        with patch.object(self.studio, "_config", return_value=config), \
+                patch("model_studio.benchmarks.research.run_research", return_value={}) as runner:
+            result = engine.evaluate('studio.runResearch({scope:"mtp", contexts:[Number("98304")], '
+                                     'target_context:Number("98304"), external_use_acknowledged:true})')
+            self.assertFalse(result.isError(), result.toString())
+            self.assertIn("research", self.workers.jobs)
+            self.workers.complete("research")
+            plan = runner.call_args.args[3]
+            self.assertEqual(plan["contexts"], [98304])
+            self.assertIs(type(plan["contexts"][0]), int)
+            self.assertIs(type(plan["target_context"]), int)
+
     def test_projector_picker_offers_discovered_module_and_cancel_does_not_enable(self):
         model = {"id": "gguf", "backend": "gguf", "path": str(self.root / "model.gguf"), "available": True}
         projector = {"backend": "gguf", "path": str(self.root / "vision-mmproj.gguf"), "available": True, "testable": False}
@@ -250,9 +278,12 @@ class StudioDesktopTests(unittest.TestCase):
         for budget in (2048, 4096, 8192):
             self.studio.setReasoning("on", budget)
             self.assertEqual(self.studio._config().reasoning_budget, budget)
-        self.studio._values.update(results=[{"id": "old", "config": old_config}],
+        self.studio._values.update(results=[{"id": "old", "model_id": model["id"],
+                                            "status": "completed", "config": old_config}],
             recommendations=[{"key": "speed", "available": True, "result_id": "old"}])
         self.studio.applyRecommendation("speed")
+        self.workers.complete("apply_saved_result")
+        self.studio._pump()
         self.assertIsNone(self.studio._config().reasoning_budget)
         self.studio.setReasoning("on", 4096)
         self.studio.setReasoning("off", 0)
@@ -284,7 +315,7 @@ class StudioDesktopTests(unittest.TestCase):
         self.studio._environment = environment
         result = {"id": "rounded", "model_id": model["id"], "config": config,
                   "effective_config": {**config, "context": config["context"] + 96},
-                  "effective_config_verified": True, "comparison_eligible": True,
+                  "workload": {"method": "studio-agent-v1"}, "effective_config_verified": True, "comparison_eligible": True,
                   "artifact": {"digest": model["digest"]}, "environment": environment,
                   "status": "completed"}
         self.studio._values["results"] = [result]
@@ -316,7 +347,7 @@ class StudioDesktopTests(unittest.TestCase):
             "requested_runs": 1, "requested_tokens_per_run": 512,
             "runs": [{"index": 1, "tokens": 512, "generation_seconds": 20.48,
                       "tokens_per_second": 25.0}],
-            "summary": {"median_tokens_per_second": 25.0}, "warnings": []}
+            "summary": {"median_scenario_seconds": 30.0}, "warnings": []}
         env = {"backend": "ollama", "runtime_build": "ollama-1", "hardware": "GPU-A",
                "driver": "D1", "verified": True}
         with patch("model_studio.benchmarks.research.environment_snapshot", return_value=env):
@@ -325,7 +356,7 @@ class StudioDesktopTests(unittest.TestCase):
             self.workers.complete("benchmark")
         self.assertEqual(len(self.store.results(model["id"])), 1)
         self.studio._pump()
-        self.assertEqual(self.studio.selectedResult["speed"], 25.0)
+        self.assertEqual(self.studio.selectedResult["scenario_seconds"], 30.0)
         self.assertEqual(self.studio.selectedResult["model_id"], model["id"])
         self.assertIn("history", self.workers.jobs)
         self.workers.complete("history")
@@ -499,6 +530,27 @@ class StudioDesktopTests(unittest.TestCase):
         self.studio._pump()
         self.assertFalse(self.studio._loading_conversation)
         self.assertIn("disk failure", self.studio.error)
+
+    def test_stop_opencode_keeps_model_session(self):
+        self.core.snapshot = {"status": "ready", "session_id": "active"}
+        self.studio._values["openCode"] = {"url": "http://127.0.0.1:43210"}
+        with patch("model_studio.desktop.controllers.opencode.stop_web") as stop:
+            self.studio.stopOpenCode()
+            self.workers.complete("stop_opencode")
+            self.studio._pump()
+        stop.assert_called_once()
+        self.assertEqual(self.core.snapshot["status"], "ready")
+        self.assertEqual(self.studio.openCode, {})
+
+    def test_unload_cleans_up_owned_opencode(self):
+        self.core.snapshot = {"status": "ready", "session_id": "active"}
+        self.studio._values["openCode"] = {"url": "http://127.0.0.1:43210"}
+        with patch("model_studio.desktop.controllers.opencode.stop_web") as stop:
+            self.studio._unload_session()
+            self.studio._pump()
+        stop.assert_called_once()
+        self.assertEqual(self.core.snapshot["status"], "stopped")
+        self.assertEqual(self.studio.openCode, {})
 
     def test_opencode_open_uses_serial_worker_and_rejects_changed_session(self):
         self.studio._values["selectedProject"] = {"path": str(self.root)}

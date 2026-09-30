@@ -93,13 +93,14 @@ def reports_text(results: list[dict], title: str, research: dict | None = None) 
             "id", "created_at", "updated_at", "status", "stop_reason", "error", "restore_error")}
         plan = job.get("plan") or {}
         metadata["plan"] = {key: plan[key] for key in (
-            "scope", "skip_existing", "base_config", "contexts", "target_context", "max_configs", "budget_minutes", "runs", "memory_economy")
+              "scope", "skip_existing", "base_config", "contexts", "kv_types", "mtp_variants", "checks", "target_context", "max_configs", "runs", "memory_economy")
             if key in plan}
         lines += ["", "Исследование:", json.dumps(metadata, ensure_ascii=False, indent=2)]
         reused = sum(bool(step.get("reused")) for step in job.get("completed_steps", []))
         if reused:
             lines.append(f"Использовано сопоставимых замеров из истории: {reused}.")
-        expected = {step.get("result_id") for step in job.get("completed_steps", []) if step.get("result_id")}
+        expected = {step.get(key) for step in job.get("completed_steps", [])
+                    for key in ("result_id", "speed_result_id", "long_result_id") if step.get(key)}
         missing = expected - {row.get("id") for row in results}
         if missing:
             lines.append(f"Недоступно сохранённых замеров из задания: {len(missing)}.")
@@ -109,15 +110,15 @@ def reports_text(results: list[dict], title: str, research: dict | None = None) 
         lines.append("Сохранённых замеров пока нет; выше приведено состояние задания.")
     else:
         lines += ["", "Краткое сравнение:",
-                  "№ | Запрошенный контекст | Фактический контекст | Генерация, ток/с | TTFT, с | Статус"]
+                  "№ | Запрошенный контекст | Фактический контекст | Сценарий, с | Методика | Статус"]
         for index, row in enumerate(results, 1):
             config, summary = row.get("config") or {}, row.get("summary") or {}
             def number(value):
                 return f"{value:.3f}".rstrip("0").rstrip(".") if isinstance(value, (int, float)) else "—"
             values = [config.get("context", row.get("requested_context", row.get("context"))),
                       (row.get("effective_config") or {}).get("context"),
-                      summary.get("median_tokens_per_second"), summary.get("median_ttft_seconds")]
-            lines.append(f"{index} | " + " | ".join(number(v) for v in values) + " | " + str(row.get("status") or "исторический"))
+                      summary.get("median_scenario_seconds"), (row.get("workload") or {}).get("method")]
+            lines.append(f"{index} | " + " | ".join(number(v) if not isinstance(v, str) else v for v in values) + " | " + str(row.get("status") or "исторический"))
         for index, row in enumerate(results, 1):
             lines += ["", f"{'=' * 20} Замер {index} из {len(results)} {'=' * 20}", report_text(row)]
     return "\n".join(lines) + "\n"
@@ -215,15 +216,19 @@ def _model_overview_line(row: dict) -> str:
               config.get("kv_type"), mtp, config.get("reasoning"), config.get("reasoning_budget"),
               config.get("gpu_layers"), projector_label, args_label,
               str(artifact.get("digest"))[:12] if artifact.get("digest") else None,
-              env_label, workload_label, summary.get("median_tokens_per_second"),
-              summary.get("median_ttft_seconds"), comparable, long_label]
+              env_label, workload_label, summary.get("median_scenario_seconds"),
+              workload.get("method"), comparable, long_label]
     return " | ".join(_model_cell(value) for value in values)
 
 
-def model_report_text(results: list[dict], title: str) -> str:
+def model_report_text(results: list[dict], title: str, *, include_history: bool = True) -> str:
     """Current result per proven test condition, followed by all saved history."""
+    from .experiment import compose_evidence
+    projected = compose_evidence(results)
+    attached = {r.get("long_result_id") for r in projected if r.get("summary")}
+    projected = [r for r in projected if r.get("id") not in attached or r.get("summary")]
     groups: dict[tuple, dict[str, tuple[dict, int]]] = {}
-    for index, row in enumerate(results):
+    for index, row in enumerate(projected):
         group = groups.setdefault(_model_group(row, index), {})
         bucket = "completed" if row.get("status") == "completed" else "failed"
         previous = group.get(bucket)
@@ -237,7 +242,7 @@ def model_report_text(results: list[dict], title: str) -> str:
     failed.sort(key=lambda row: _model_row_date(row, 0), reverse=True)
     header = ("ID | Дата | Запрошенный контекст | Фактический контекст | KV | MTP/Draft | Reasoning | Бюджет | GPU слои | "
               "Проектор | Доп. аргументы | Артефакт | Runtime/оборудование/драйвер | "
-              "Методика/подпись | Генерация, ток/с | TTFT, с | Для сравнения | Длинный вход подтверждён")
+              "Методика/подпись | Сценарий, с | Методика | Для сравнения | Длинный вход подтверждён")
     research_ids = {row.get("research_id") for row in results if row.get("research_id")}
     without_research = sum(not row.get("research_id") for row in results)
     lines = ["Модельная студия — актуальный срез модели", _model_cell(title),
@@ -248,6 +253,11 @@ def model_report_text(results: list[dict], title: str) -> str:
              "Недостающие сведения обозначены как «неизвестно» и не объединяются.",
              "", "Последний завершённый замер для каждой конфигурации:", header]
     lines.extend(_model_overview_line(row) for row in successful)
+    for row in successful:
+        proof = row.get("long_context_provenance") or {}
+        if proof:
+            lines.append(f"Длинный вход для {_model_cell(row.get('id'))}: отдельная проверка "
+                         f"{_model_cell(proof.get('source_result_id'))}, дата {_model_cell(proof.get('source_created_at'))}.")
     if not successful:
         lines.append("Завершённых замеров нет.")
     lines += ["", "Последние неуспешные попытки без более нового успешного замера:",
@@ -271,5 +281,53 @@ def model_report_text(results: list[dict], title: str) -> str:
             env_label, workload_label, row.get("error"))))
     if not failed:
         lines.append("Нет.")
-    lines += ["", "Полная история всех сохранённых результатов:", reports_text(results, title)]
+    if include_history:
+        lines += ["", "Полная история всех сохранённых результатов:", reports_text(results, title)]
+    return "\n".join(lines)
+
+
+def experiment_report_text(results: list[dict], title: str, research: dict) -> str:
+    """Readable study outcome with separate provenance for each measured property."""
+    rows = {r["id"]: r for r in results}
+    job = _private(research)
+    plan = job.get("plan", {})
+    steps = list({step.get("key", str(index)): step for index, step in enumerate(job.get("completed_steps", []))}.values())
+    lines = ["Модельная студия — итог исследования", _model_cell(title),
+             f"Исследование: {job.get('id')}; статус: {job.get('status')}",
+             "Сравнивались конфигурации одной модели при общих условиях.",
+             "План: " + json.dumps({k: plan.get(k) for k in
+                ("contexts", "kv_types", "mtp_variants", "checks", "runs", "skip_existing")}, ensure_ascii=False),
+             "Общие условия: " + json.dumps(plan.get("base_config", {}), ensure_ascii=False),
+             "", "Контекст | Память | MTP | Сценарий, с | Методика | Длинный вход | Статус"]
+    for step in steps:
+        config = step.get("config") or {}
+        speed_id = step.get("speed_result_id") or step.get("result_id")
+        long_id = step.get("long_result_id")
+        speed = rows.get(speed_id, {})
+        long = rows.get(long_id, {}) if long_id else speed
+        summary = speed.get("summary") or {}
+        proof = long.get("long_context") or {}
+        lines.append(" | ".join(_model_cell(v) for v in (
+            config.get("context", step.get("context")), config.get("kv_type"),
+            "Draft " + str(config.get("draft")) if config.get("mtp") else "Off",
+            summary.get("median_scenario_seconds"), (speed.get("workload") or {}).get("method"),
+            "проверен" if proof.get("validated") is True else "не подтверждён", step.get("status"))))
+        if step.get("error"):
+            lines.append("Причина: " + _model_cell(step["error"]))
+        for label, row, source_id, state in (
+            ("Скорость", speed, speed_id, step.get("speed_status")),
+            ("Длинный вход", long, long_id, step.get("long_status"))):
+            if source_id:
+                source = "из истории" if state == "history" or step.get("reused") else "новая проверка"
+                lines.append(f"  {label}: {source}; ID {_model_cell(source_id)}; дата {_model_cell(row.get('created_at'))}.")
+    attached = {step.get(key) for step in steps for key in ("result_id", "speed_result_id", "long_result_id")}
+    unfinished = [r for r in results if r.get("id") not in attached]
+    if unfinished:
+        lines += ["", "Сохранённые проверки ещё не завершённых шагов:"]
+        for row in unfinished:
+            lines.append(f"ID {_model_cell(row.get('id'))}; дата {_model_cell(row.get('created_at'))}; "
+                         f"статус {_model_cell(row.get('status'))}; метод {_model_cell((row.get('workload') or {}).get('method'))}.")
+    lines += ["", "Окружение: " + json.dumps(job.get("plan", {}).get("baseline_environment", {}), ensure_ascii=False),
+              "Отсутствующие значения не равны нулю. Скорость и подтверждение длинного входа могут происходить из разных проверок одной конфигурации.",
+              "Объясни компромиссы контекста, скорости и памяти. Учитывай среду, настройки MTP/KV и непроверенные показатели."]
     return "\n".join(lines)

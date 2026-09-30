@@ -1,0 +1,33 @@
+{
+  "name": "model-studio-browser-host",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Isolated OpenCode V2 browser host using the official desktop browser implementation",
+  "main": "dist/app.cjs",
+  "scripts": {
+    "build": "node build.mjs",
+    "package:win": "npm run build && node package.mjs"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-rc.112",
+    "@effect/platform-node-shared": "4.0.0-rc.112",
+    "@opencode/client": "2.0.15",
+    "@opencode/plugin": "2.0.15",
+    "@opencode/plugin-browser": "2.0.15",
+    "@opencode/schema": "2.0.15",
+    "devtools-protocol": "0.0.1687809",
+    "effect": "4.0.0-rc.112",
+    "lighthouse": "13.4.1",
+    "puppeteer-core": "25.9.0"
+  },
+  "devDependencies": {
+    "electron": "44.4.3",
+    "esbuild": "0.25.12"
+  },
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.0-rc.112",
+    "@effect/platform-node@4.0.0-rc.112": {
+      "@effect/platform-node-shared": "4.0.0-rc.112"
+    }
+  }
+}

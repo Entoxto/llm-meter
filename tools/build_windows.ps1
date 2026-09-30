@@ -1,11 +1,13 @@
 param(
-    [switch]$SkipSmoke
+    [switch]$SkipSmoke,
+    [string]$OutputRoot = 'dist',
+    [switch]$UseBuiltBrowserHost
 )
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
-$distRoot = Join-Path $projectRoot 'dist'
+$distRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot $OutputRoot))
 $distTarget = [IO.Path]::GetFullPath((Join-Path $distRoot 'ModelStudio'))
 $buildRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot 'build\pyinstaller'))
 $analysisTarget = [IO.Path]::GetFullPath((Join-Path $buildRoot 'ModelStudio'))
@@ -28,6 +30,17 @@ $previousPythonPath = $env:PYTHONPATH
 $previousQtPluginPath = $env:QT_PLUGIN_PATH
 $previousQmlImportPath = $env:QML_IMPORT_PATH
 try {
+    $browserRoot = Join-Path $projectRoot 'browser-host'
+    $browserBundle = Join-Path $browserRoot 'dist\win-unpacked'
+    if (-not $UseBuiltBrowserHost) {
+        & npm.cmd --prefix $browserRoot ci --ignore-scripts
+        if ($LASTEXITCODE -ne 0) { throw 'Browser host dependency installation failed.' }
+        & npm.cmd --prefix $browserRoot run package:win
+        if ($LASTEXITCODE -ne 0) { throw 'Browser host build failed.' }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $browserBundle 'ModelStudioBrowser.exe') -PathType Leaf)) {
+        throw 'Browser host bundle missing. Build browser-host before packaging Studio.'
+    }
     & $python -c "import PyInstaller, PySide6; assert PyInstaller.__version__ == '6.22.3'; assert PySide6.__version__ == '6.11.2'"
     if ($LASTEXITCODE -ne 0) {
         throw 'Expected PyInstaller 6.22.3 and PySide6 6.11.2 in .venv.'
@@ -60,6 +73,7 @@ try {
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
         throw "Missing output: $exe"
     }
+    Copy-Item -LiteralPath $browserBundle -Destination (Join-Path $distTarget 'browser-host') -Recurse
     if (-not $SkipSmoke) {
         $smokeRoot = Join-Path $buildRoot ('smoke-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Force -Path $smokeRoot | Out-Null

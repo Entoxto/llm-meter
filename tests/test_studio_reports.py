@@ -1,9 +1,28 @@
 import unittest
 
-from model_studio.benchmarks.reports import model_report_text, reports_text
+from model_studio.benchmarks.reports import model_report_text, reports_text, experiment_report_text
 
 
 class BulkReportTests(unittest.TestCase):
+    def test_summary_and_full_history_are_distinct_actions(self):
+        rows = [{"id": "one", "status": "completed", "summary": {"median_tokens_per_second": 12}}]
+        compact = model_report_text(rows, "Модель", include_history=False)
+        self.assertNotIn("Полная история всех сохранённых результатов", compact)
+        self.assertIn("Полная история всех сохранённых результатов", model_report_text(rows, "Модель"))
+
+    def test_experiment_report_keeps_independent_dates_and_sources(self):
+        speed = {"id": "speed-old", "created_at": "2026-09-20", "summary": {"median_scenario_seconds": 40}}
+        long = {"id": "long-new", "created_at": "2026-09-26", "long_context": {"validated": True}}
+        job = {"id": "job", "status": "completed", "plan": {"base_config": {"model": "C:/private/model.gguf"}},
+            "completed_steps": [{"config": {"context": 32768, "kv_type": "q8_0", "mtp": True, "draft": 2},
+                "speed_result_id": "speed-old", "long_result_id": "long-new", "speed_status": "history",
+                "long_status": "measure", "status": "completed"}]}
+        text = experiment_report_text([speed, long], "Модель", job)
+        self.assertIn("Скорость: из истории; ID speed-old; дата 2026-09-20", text)
+        self.assertIn("Длинный вход: новая проверка; ID long-new; дата 2026-09-26", text)
+        self.assertIn("Draft 2 | 40", text)
+        self.assertNotIn("C:/private", text)
+
     def test_empty_failed_research_is_a_diagnostic_report(self):
         report = reports_text([], "Исследование", {"id": "job", "status": "stopped",
             "error": "Server failed at C:/private/model.gguf", "plan": {
@@ -16,7 +35,7 @@ class BulkReportTests(unittest.TestCase):
     def test_full_report_keeps_each_result_and_marks_missing_and_running(self):
         results = [{"id": "one", "status": "completed", "config": {"context": 100000},
                     "effective_config": {"context": 100096},
-                    "summary": {"median_tokens_per_second": 79.66331}},
+                    "summary": {"median_scenario_seconds": 79.66331}},
                    {"id": "two", "status": "error", "error": "OOM"}]
         report = reports_text(results, "Bonsai", {"status": "running",
             "completed_steps": [{"result_id": "one"}, {"result_id": "missing"}]})

@@ -10,7 +10,8 @@ from pathlib import Path
 import threading
 import uuid
 
-from engine import Cancelled, run_benchmark, selected_resident, without_generation_timeout
+from engine import Cancelled, selected_resident, without_generation_timeout
+from model_studio.benchmarks.agent import run_agent_benchmark
 from model_studio.backends.llama_cpp import LlamaCppBackend
 from model_studio.backends.ollama import OllamaBackend
 from model_studio.backends.images import image_mime
@@ -424,11 +425,9 @@ class SessionController:
                 self._finish(operation)
         return result
 
-    def benchmark(self, runs: int = 3, tokens: int = 512) -> dict:
+    def benchmark(self, runs: int = 1) -> dict:
         if type(runs) is not int or not 1 <= runs <= 100:
             raise ValueError("runs must be between 1 and 100.")
-        if type(tokens) is not int or not 1 <= tokens <= 32768:
-            raise ValueError("tokens must be between 1 and 32768.")
         operation, stop = self._begin("benchmark", require_ready=True)
         with self._lock:
             client, model_id, config, session_id = self._client, self._model_id, self._config, self._session_id
@@ -444,10 +443,10 @@ class SessionController:
                     self._publish(event, payload if isinstance(payload, dict) else {"message": str(payload)})
 
             with without_generation_timeout(client):
-                result = run_benchmark(client, model_id, relay, stop, None, runs=runs, tokens=tokens)
+                result = run_agent_benchmark(client, model_id, relay, stop, runs=runs)
             result.update(session_id=session_id, operation_id=operation,
                           config=config.to_dict(), model_id=config.model_id or None,
-                          runtime_model_id=model_id, method="legacy-short-v2")
+                          runtime_model_id=model_id)
             if result["status"] == "error":
                 self._check_connection_after_error(client, session_id)
         finally:

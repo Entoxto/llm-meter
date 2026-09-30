@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from math import isfinite
 from pathlib import Path
+from .agent import METHOD, scenario_seconds
 
 
 _TITLES = {"speed": "Максимальная скорость", "context": "Максимальный контекст",
@@ -28,7 +28,7 @@ def _card(key: str, reason: str, row: dict | None = None, current: dict | None =
     config = row.get("effective_config") or row.get("config") or {} if row else {}
     requested = row.get("config") or config if row else {}
     actual_context = config.get("context") if isinstance(config, dict) else None
-    speed = (row.get("summary") or {}).get("median_tokens_per_second") if row else None
+    duration = scenario_seconds(row) if row else None
     controlled_runtime = config.get("backend") == "llama.cpp" and config.get("managed") is True
     exact = False
     if current and row and isinstance(requested, dict):
@@ -37,7 +37,7 @@ def _card(key: str, reason: str, row: dict | None = None, current: dict | None =
                     if key in _CONFIG_KEYS)
         exact = exact and any(key in current for key in _CONFIG_KEYS)
     return {"key": key, "title": _TITLES[key], "available": row is not None,
-            "reason": reason, "context": actual_context, "speed": speed,
+            "reason": reason, "context": actual_context, "scenario_seconds": duration,
             "mtp": config.get("mtp") if controlled_runtime else None,
             "draft": config.get("draft") if controlled_runtime else None,
             "kv_type": config.get("kv_type") if controlled_runtime else None,
@@ -45,7 +45,7 @@ def _card(key: str, reason: str, row: dict | None = None, current: dict | None =
 
 
 def _eligible(row: dict) -> bool:
-    speed = (row.get("summary") or {}).get("median_tokens_per_second")
+    duration = scenario_seconds(row)
     environment = row.get("environment") or {}
     artifact = row.get("artifact") or {}
     workload = row.get("workload") or {}
@@ -55,7 +55,7 @@ def _eligible(row: dict) -> bool:
         selected and isinstance(projector, dict) and projector.get("identity_verified") is True
         and projector.get("digest") and environment.get("projector_digest") == projector.get("digest"))
     return (row.get("status") in ("completed", "complete")
-            and isinstance(speed, (int, float)) and isfinite(speed) and speed > 0
+            and duration is not None and workload.get("method") == METHOD
             and row.get("comparison_eligible") is True
             and isinstance((row.get("effective_config") or {}).get("context"), int)
             and artifact.get("identity_verified") is True and bool(artifact.get("digest"))
@@ -70,6 +70,8 @@ def recommendations(results: list[dict], current_config: dict | None = None,
                     target_context: int = 65536,
                     current_environment: dict | None = None) -> list[dict]:
     """Return three evidence-backed cards; unknowns produce unavailable cards."""
+    from .experiment import compose_evidence
+    results = compose_evidence(results)
     if current_config is not None and (not current_environment or
                                        current_environment.get("verified") is not True):
         reason = "Среда текущего запуска ещё не проверена; сохранённые замеры доступны в истории."
@@ -105,7 +107,7 @@ def recommendations(results: list[dict], current_config: dict | None = None,
                env["hardware"], env["driver"], workload["signature"])
         groups[key].append(row)
     if not groups:
-        reason = "Нет сопоставимых проверенных результатов: нужны digest модели, среда, применённые настройки и методика."
+        reason = "Нет сопоставимых агентских сценариев. Выполните новый тест; прежние замеры сохранены в истории."
         relevant = [r for r in results if not current_config or r.get("model_id") == current_config.get("model_id")]
         if relevant and all(not (r.get("artifact") or {}).get("identity_verified")
                             or not (r.get("artifact") or {}).get("digest") for r in relevant):
@@ -118,8 +120,8 @@ def recommendations(results: list[dict], current_config: dict | None = None,
         newest = max(str(row.get("created_at", "")) for row in rows)
         return (exact, len(rows), newest)
     rows = max(groups.values(), key=group_priority)
-    fastest = max(rows, key=lambda r: r["summary"]["median_tokens_per_second"])
-    cards = [_card("speed", "Лучшая медианная скорость среди сопоставимых проверенных замеров.",
+    fastest = min(rows, key=scenario_seconds)
+    cards = [_card("speed", "Минимальное время фиксированного агентского сценария среди сопоставимых замеров.",
                    fastest, current_config)]
     long_proven = [r for r in rows if (r.get("long_context") or {}).get("validated") is True
                    and isinstance((r.get("long_context") or {}).get("accepted_tokens"), int)]
@@ -132,16 +134,16 @@ def recommendations(results: list[dict], current_config: dict | None = None,
     target_rows = [r for r in rows if isinstance((r.get("effective_config") or {}).get("context"), int)
                    and r["effective_config"]["context"] >= target_context
                    and (r.get("long_context") or {}).get("validated") is True]
-    speed_floor = fastest["summary"]["median_tokens_per_second"] * .8
-    balanced = [r for r in target_rows if r["summary"]["median_tokens_per_second"] >= speed_floor
+    duration_ceiling = scenario_seconds(fastest) * 1.2
+    balanced = [r for r in target_rows if scenario_seconds(r) <= duration_ceiling
                 and isinstance((r.get("memory") or {}).get("vram_bytes"), (int, float))]
     if balanced:
         choice = min(balanced, key=lambda r: (r["memory"]["vram_bytes"],
-                                               -r["summary"]["median_tokens_per_second"]))
-        cards.append(_card("balanced", f"Контекст ≥{target_context}, проверенная память и скорость в пределах 20% от лучшей.",
+                                               scenario_seconds(r)))
+        cards.append(_card("balanced", f"Контекст ≥{target_context}, проверенная память и время сценария не более чем на 20% хуже лучшего.",
                            choice, current_config))
     else:
         reason = (_missing_long_context_reason(rows) if not long_proven else
-                  "Нет проверки целевого контекста, памяти и скорости в пределах 20% от лучшей.")
+                  "Нет проверки целевого контекста, памяти и времени сценария в пределах 20% от лучшего.")
         cards.append(_card("balanced", reason))
     return cards

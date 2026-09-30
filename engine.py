@@ -370,7 +370,7 @@ def gpu_summary(samples):
             for index, d in devices.items()]
 
 
-def run_benchmark(client, model, emit, stop, output_dir, runs=RUNS, tokens=TOKENS):
+def run_benchmark(client, model, emit, stop, output_dir, runs=RUNS, tokens=TOKENS, workload=None):
     """Run in a worker thread. emit(event, data) must be thread safe."""
     report = {"schema_version": 2, "created_at": dt.datetime.now().astimezone().isoformat(),
               "backend": client.backend, "host": client.host, "model": model,
@@ -379,6 +379,8 @@ def run_benchmark(client, model, emit, stop, output_dir, runs=RUNS, tokens=TOKEN
               "requested_tokens_per_run": tokens, "requested_runs": runs,
               "prompt": PROMPT, "options": {"temperature": 0, "seed": 42},
               "thinking_mode": "model_default", "runs": [], "samples": [], "warnings": []}
+    if workload is not None:
+        report.update(workload.metadata(runs))
     monitor_stop = threading.Event()
     telemetry = Telemetry(client)
 
@@ -424,6 +426,9 @@ def run_benchmark(client, model, emit, stop, output_dir, runs=RUNS, tokens=TOKEN
                                       + ". Они могут влиять на результат.")
         if stop.is_set():
             raise Cancelled()
+        if workload is not None:
+            workload.prepare(client, stop)
+            report.update(workload.metadata(runs))
         worker = threading.Thread(target=monitor, daemon=True)
         report["test_started_monotonic"] = time.perf_counter()
         worker.start()
@@ -435,7 +440,8 @@ def run_benchmark(client, model, emit, stop, output_dir, runs=RUNS, tokens=TOKEN
                 raise Cancelled()
             emit("status", f"Замер {index}/{runs} · до {tokens} токенов…")
             started = time.perf_counter()
-            result = client.generate(model, f"Trial {index}. " + PROMPT, tokens, stop)
+            result = (workload.run(client, model, emit, stop) if workload is not None else
+                      client.generate(model, f"Trial {index}. " + PROMPT, tokens, stop))
             result.update(index=index, started_monotonic=started, ended_monotonic=time.perf_counter())
             result["placement"] = resident()
             result["context_limit"] = client.model_info.get("context_limit")
@@ -452,6 +458,8 @@ def run_benchmark(client, model, emit, stop, output_dir, runs=RUNS, tokens=TOKEN
         for key in ("prompt_tokens_per_second", "ttft_seconds"):
             values = [r[key] for r in report["runs"] if r.get(key) is not None]
             report["summary"]["median_" + key] = statistics.median(values) if values else None
+        if workload is not None:
+            report["summary"].update(workload.summary(report["runs"]))
         report["status"] = "completed"
     except Cancelled:
         report["status"] = "cancelled"

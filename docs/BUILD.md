@@ -48,6 +48,25 @@ before distributing it.
 
 ## Verification scope
 
+### OpenCode browser companion
+
+Windows packaging also builds `browser-host` with Node/npm and its committed
+lockfile. It contains the pinned OpenCode Desktop browser implementation and
+Electron. This is a direct folder distribution, not a self-extracting executable.
+Keep `browser-host/` beside `ModelStudio.exe` when copying the application.
+See `browser-host/` for third-party provenance and licensing.
+
+To stage an update without replacing the running installation:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/build_windows.ps1 -OutputRoot build/staged-release
+```
+
+`-UseBuiltBrowserHost` reuses a companion already built from the current source;
+the script still requires its executable. Use this only after its build/checks.
+The regular Python tests do not start Chromium or a model. Browser integration
+requires a separate isolated acceptance run; Qt capture alone cannot prove it.
+
 The automated smoke proves that the packaged process starts, loads the QML
 view and SVG/Qt resources, renders a page, writes to an isolated SQLite data
 directory, captures an image, and exits. Live model startup and GPU behavior

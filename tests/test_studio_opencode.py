@@ -1,5 +1,6 @@
 import base64
 import json
+import io
 import os
 import sys
 from pathlib import Path
@@ -13,10 +14,26 @@ from urllib.request import Request, urlopen
 from unittest.mock import patch, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from model_studio.integrations.opencode import connection_config, executable, launch
+from model_studio.integrations.opencode import _web_url, connection_config, executable, launch
 
 
 class OpenCodeTests(unittest.TestCase):
+    def setUp(self):
+        available = patch("model_studio.integrations.opencode.browser_host.available", return_value=False)
+        available.start()
+        self.addCleanup(available.stop)
+        owned = patch("model_studio.integrations.opencode._owned_web", None)
+        owned.start()
+        self.addCleanup(owned.stop)
+
+    def test_web_url_uses_owned_server_reported_ephemeral_port(self):
+        process = Mock()
+        process.poll.return_value = None
+        process.stdout = io.StringIO("server listening on http://127.0.0.1:65432\n")
+        with patch("model_studio.integrations.opencode.socket.create_connection") as connect:
+            self.assertEqual(_web_url(process), "http://127.0.0.1:65432")
+        connect.assert_called_once_with(("127.0.0.1", 65432), timeout=2)
+
     def test_v2_ollama_uses_runtime_model_and_native_provider(self):
         session = dict(status="ready", backend="ollama", model="outdated",
                        model_id="a/b:q4", host="http://127.0.0.1:11434/v1",
@@ -27,6 +44,8 @@ class OpenCodeTests(unittest.TestCase):
                          "http://127.0.0.1:11434/v1")
         self.assertEqual(config["providers"]["ollama"]["models"]["a/b:q4"]["limit"],
                          {"context": 65536, "output": 4096})
+        self.assertEqual(config["permissions"],
+                         [{"action": "browser", "resource": "*", "effect": "deny"}])
         self.assertNotIn("provider", config)
         self.assertEqual(config["providers"]["ollama"]["package"], "@opencode/ai/providers/openai-compatible")
 
@@ -52,13 +71,28 @@ class OpenCodeTests(unittest.TestCase):
                  patch("model_studio.integrations.opencode.executable", return_value=Path("C:/opencode.exe")), \
                  patch("model_studio.integrations.opencode.subprocess.run",
                        side_effect=[Mock(returncode=0, stdout="opencode v2.0.15"),
-                                    Mock(returncode=0, stdout="--standalone")]), \
-                 patch("model_studio.integrations.opencode.subprocess.Popen", return_value=Mock(pid=123)) as popen:
-                launch(folder, dict(status="ready", backend="ollama", model_id="test",
-                                    context=32768, host="http://127.0.0.1:11434"))
+                                    Mock(returncode=0, stdout="--hostname --port")]), \
+                 patch("model_studio.integrations.opencode.subprocess.Popen", return_value=Mock(pid=123)) as popen, \
+                 patch("model_studio.integrations.opencode._web_url",
+                       return_value="http://127.0.0.1:65432"), \
+                 patch("model_studio.integrations.opencode.webbrowser.open", return_value=True) as browser:
+                result = launch(folder, dict(status="ready", backend="ollama", model_id="test",
+                                             context=32768, host="http://127.0.0.1:11434"))
             args, kwargs = popen.call_args
-            self.assertEqual(args[0], [str(Path("C:/opencode.exe")), "--standalone",
-                                        str(Path(folder).resolve())])
+            self.assertEqual(args[0], [str(Path("C:/opencode.exe")), "serve", "--hostname",
+                                        "127.0.0.1", "--port", "0"])
+            self.assertEqual(kwargs["cwd"], Path(folder).resolve())
+            self.assertEqual(kwargs["creationflags"], getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            self.assertEqual(kwargs["stdout"], subprocess.PIPE)
+            self.assertEqual(result["url"], "http://127.0.0.1:65432")
+            self.assertTrue(kwargs["env"]["OPENCODE_PASSWORD"])
+            opened = browser.call_args.args[0]
+            self.assertTrue(opened.startswith("http://127.0.0.1:65432/connect#"))
+            code = opened.split("#", 1)[1]
+            pairing = json.loads(base64.urlsafe_b64decode(code + "=" * (-len(code) % 4)))
+            self.assertEqual(pairing, {"username": "opencode",
+                                       "password": kwargs["env"]["OPENCODE_PASSWORD"]})
+            self.assertNotIn(kwargs["env"]["OPENCODE_PASSWORD"], result["url"])
             self.assertNotIn("shell", kwargs)
             self.assertEqual(kwargs["env"]["OPENCODE_DISABLE_PROJECT_CONFIG"], "1")
             self.assertNotIn("OPENCODE_CONFIG_CONTENT", kwargs["env"])
@@ -66,8 +100,33 @@ class OpenCodeTests(unittest.TestCase):
             config_root = Path(kwargs["env"]["XDG_CONFIG_HOME"])
             self.assertTrue(config_root.is_relative_to(Path(data)))
             config = json.loads((config_root / "opencode" / "opencode.json").read_text(encoding="utf-8"))
+            self.assertIn("-opencode.browser", config["plugins"])
             self.assertEqual(config["model"], {"providerID": "ollama", "model": "test"})
             self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_host_failure_disables_plugin_without_stopping_model(self):
+        from model_studio.integrations import opencode
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.dict(os.environ, {"MODEL_STUDIO_DATA_DIR": folder}), \
+             patch.object(opencode, "executable", return_value=Path("C:/opencode.exe")), \
+             patch.object(opencode, "_major_version", return_value=2), \
+             patch.object(opencode.subprocess, "run", return_value=Mock(returncode=0, stdout="--hostname --port")), \
+             patch.object(opencode.subprocess, "Popen") as popen, \
+             patch.object(opencode, "_web_url", return_value="http://127.0.0.1:65432"), \
+             patch.object(opencode.webbrowser, "open", return_value=True), \
+             patch.object(opencode.browser_host, "available", return_value=True), \
+             patch.object(opencode.browser_host, "BrowserHost") as host, \
+             patch.object(opencode, "_disable_browser") as disable:
+            popen.return_value.pid = 123
+            popen.return_value.poll.return_value = None
+            host.return_value.start.side_effect = RuntimeError("not attached")
+            result = launch(folder, dict(status="ready", model="test", context=32768,
+                                        host="http://127.0.0.1:8080"))
+            self.assertEqual(result["browser"]["status"], "unavailable")
+            disable.assert_called_once()
+            popen.return_value.terminate.assert_not_called()
+            opencode.stop_web()
+            host.return_value.close.assert_called_once()
 
     def test_v1_launch_keeps_inline_configuration(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -77,12 +136,54 @@ class OpenCodeTests(unittest.TestCase):
                                     Mock(returncode=0, stdout="OpenCode")]), \
                  patch("model_studio.integrations.opencode.subprocess.Popen", return_value=Mock(pid=321)) as popen:
                 launch(folder, dict(status="ready", model="test", context=32768,
-                                    host="http://127.0.0.1:8080"))
+                                    host="http://127.0.0.1:8080"), mode="tui")
             args, kwargs = popen.call_args
             self.assertNotIn("--standalone", args[0])
             config = json.loads(kwargs["env"]["OPENCODE_CONFIG_CONTENT"])
             self.assertEqual(config["model"], "studio-local/test")
             self.assertIn("provider", config)
+
+    def test_web_launch_failure_terminates_only_owned_child(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch("model_studio.integrations.opencode.executable", return_value=Path("C:/opencode.exe")), \
+             patch("model_studio.integrations.opencode.subprocess.run",
+                   side_effect=[Mock(returncode=0, stdout="opencode v2.0.15"),
+                                Mock(returncode=0, stdout="--hostname --port")]), \
+             patch("model_studio.integrations.opencode.subprocess.Popen") as popen, \
+             patch("model_studio.integrations.opencode._web_url",
+                   side_effect=RuntimeError("web failed")):
+            popen.return_value.poll.return_value = None
+            with self.assertRaisesRegex(RuntimeError, "web failed"):
+                launch(folder, dict(status="ready", model="test", context=32768,
+                                    host="http://127.0.0.1:8080"))
+        popen.return_value.terminate.assert_called_once()
+        popen.return_value.wait.assert_called_once_with(timeout=5)
+
+    def test_repeated_web_launch_reuses_owned_process_and_stop_is_scoped(self):
+        from model_studio.integrations import opencode
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(opencode, "_owned_web", None), \
+             patch("model_studio.integrations.opencode.executable", return_value=Path("C:/opencode.exe")), \
+             patch("model_studio.integrations.opencode.subprocess.run",
+                   side_effect=[Mock(returncode=0, stdout="opencode v2.0.15"),
+                                Mock(returncode=0, stdout="--hostname --port"),
+                                Mock(returncode=0, stdout="opencode v2.0.15")]), \
+             patch("model_studio.integrations.opencode.subprocess.Popen") as popen, \
+             patch("model_studio.integrations.opencode._web_url",
+                   return_value="http://127.0.0.1:65432"), \
+             patch("model_studio.integrations.opencode.webbrowser.open", return_value=True) as browser:
+            popen.return_value.pid = 123
+            popen.return_value.poll.return_value = None
+            snapshot = dict(status="ready", model="test", context=32768,
+                            host="http://127.0.0.1:8080", session_id="s1")
+            first = launch(folder, snapshot)
+            second = launch(folder, snapshot)
+            self.assertEqual(first, second)
+            self.assertEqual(popen.call_count, 1)
+            self.assertEqual(browser.call_count, 2)
+            opencode.stop_web()
+            popen.return_value.terminate.assert_called_once()
+            popen.return_value.wait.assert_called_once_with(timeout=5)
 
     @unittest.skipUnless(os.environ.get("MODEL_STUDIO_LIVE_OPENCODE") == "1",
                          "requires installed OpenCode and running Ollama")

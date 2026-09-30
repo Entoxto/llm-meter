@@ -1,3 +1,4 @@
+from agent_fixtures import agent_measurement
 """Vision transport and saved projector identity contracts."""
 
 import base64
@@ -66,6 +67,7 @@ class VisionTests(unittest.TestCase):
                         "runs": [{"index": 1, "tokens": 8, "generation_seconds": 1,
                                   "tokens_per_second": 8}],
                         "summary": {"median_tokens_per_second": 8}}
+            measured.update(agent_measurement())
             client = SimpleNamespace(projector_identity=selected, vision_available=True)
             environment = {"backend": "llama.cpp", "runtime_build": "v1",
                            "hardware": "GPU", "driver": "D1", "verified": True,

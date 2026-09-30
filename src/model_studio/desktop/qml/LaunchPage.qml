@@ -100,7 +100,7 @@ Item {
                                 }
                                 RowLayout { visible: !!rec && !!rec.available; Layout.fillWidth: true; spacing: 16
                                     ColumnLayout { spacing: 3; Text { text: "Контекст"; color: Theme.muted; font.pixelSize: 12 } Text { text: page.contextLabel(rec ? rec.context : null); color: Theme.text; font.pixelSize: 21; font.bold: true } }
-                                    ColumnLayout { spacing: 3; Text { text: "Скорость"; color: Theme.muted; font.pixelSize: 12 } Text { text: page.shown(rec ? rec.speed : null," ток/с"); color: Theme.text; font.pixelSize: 21; font.bold: true } }
+                                    ColumnLayout { spacing: 3; Text { text: "Сценарий"; color: Theme.muted; font.pixelSize: 12 } Text { text: page.shown(rec ? rec.scenario_seconds : null," с"); color: Theme.text; font.pixelSize: 21; font.bold: true } }
                                 }
                                 Text { visible: !!rec && !rec.available; text: "Нет проверенного режима"; color: Theme.muted; font.pixelSize: 15; Layout.fillWidth: true }
                                 Text { visible: !!rec && !!rec.available && !!page.modeDetails(rec); text: page.modeDetails(rec); color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
@@ -181,7 +181,7 @@ Item {
                         ColumnLayout { anchors.fill: parent; anchors.margins: 14; spacing: 10
                             StudioIcon { name: page.v(bridge.matchingResult,"id","") ? "check" : "info-circle"; width: 26; height: 26; Layout.alignment: Qt.AlignHCenter }
                             Text { text: page.v(bridge.matchingResult,"id","") ? "Подходящий замер сохранён" : "Эта конфигурация ещё не тестировалась"; color: Theme.text; font.pixelSize: 14; font.bold: true; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
-                            Text { text: page.v(bridge.matchingResult,"id","") ? page.shown(page.v(bridge.matchingResult,"speed",null)," ток/с") : "Запустите тест, чтобы увидеть скорость на этом компьютере."; color: Theme.muted; font.pixelSize: 13; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
+                            Text { text: page.v(bridge.matchingResult,"id","") ? page.shown(page.v(bridge.matchingResult,"scenario_seconds",null)," с") : "Запустите тест, чтобы измерить время агентского сценария."; color: Theme.muted; font.pixelSize: 13; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
                         }
                     }
                     StudioButton { text: "Протестировать"; iconName: "player-play"; Layout.fillWidth: true; enabled: !bridge.busy && page.startable(); onClicked: bridge.runBenchmark() }
@@ -207,12 +207,12 @@ Item {
                                 Text { visible: host.running(); text: "Вся система"; color: Theme.muted; font.pixelSize: 12; font.bold: true }
                                 RowLayout { Layout.fillWidth: true; spacing: 16
                                     ColumnLayout { Layout.fillWidth: true; spacing: 2
-                                        Text { text: host.running() ? "GPU · занято / всего" : "Скорость генерации"; color: Theme.muted; font.pixelSize: 12 }
-                                        Text { text: host.running() ? page.shown(page.v(bridge.telemetry,"gpu_used_gb",null)," ГБ") + " / " + page.shown(page.v(bridge.telemetry,"gpu_total_gb",null)," ГБ") : page.shown(page.v(bridge.matchingResult,"speed",null)," ток/с"); color: Theme.text; font.pixelSize: 16; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
+                                        Text { text: host.running() ? "GPU · занято / всего" : "Агентский сценарий"; color: Theme.muted; font.pixelSize: 12 }
+                                        Text { text: host.running() ? page.shown(page.v(bridge.telemetry,"gpu_used_gb",null)," ГБ") + " / " + page.shown(page.v(bridge.telemetry,"gpu_total_gb",null)," ГБ") : page.shown(page.v(bridge.matchingResult,"scenario_seconds",null)," с"); color: Theme.text; font.pixelSize: 16; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
                                     }
                                     ColumnLayout { Layout.fillWidth: true; spacing: 2
-                                        Text { text: host.running() ? "RAM · занято / всего" : "Первый токен"; color: Theme.muted; font.pixelSize: 12 }
-                                        Text { text: host.running() ? page.shown(page.v(bridge.telemetry,"ram_used_gb",null)," ГБ") + " / " + page.shown(page.v(bridge.telemetry,"ram_total_gb",null)," ГБ") : page.shown(page.v(bridge.matchingResult,"ttft",null)," с"); color: Theme.text; font.pixelSize: 16; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
+                                        Text { text: host.running() ? "RAM · занято / всего" : "Пик VRAM"; color: Theme.muted; font.pixelSize: 12 }
+                                        Text { text: host.running() ? page.shown(page.v(bridge.telemetry,"ram_used_gb",null)," ГБ") + " / " + page.shown(page.v(bridge.telemetry,"ram_total_gb",null)," ГБ") : page.shown(page.v(bridge.matchingResult,"vram_gb",null)," ГБ"); color: Theme.text; font.pixelSize: 16; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
                                     }
                                 }
                                 Text { visible: host.running(); text: "Память модели · буферы"; color: Theme.muted; font.pixelSize: 12; font.bold: true }
@@ -222,8 +222,8 @@ Item {
                                     ToolTip.text: "Источник: " + page.v(bridge.telemetry,"model_memory_source","")
                                 }
                                 Text { visible: host.running(); text: "Загрузка GPU " + page.shown(page.v(bridge.telemetry,"gpu_utilization",null),"%") + "  •  Размещение: " + page.shown(page.v(bridge.telemetry,"offload",null)); color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
-                                Text { visible: !host.running() && !!page.v(bridge.matchingResult,"id",""); text: "Обработка входа " + page.shown(page.v(bridge.matchingResult,"prompt_speed",null)," ток/с") + "  •  Пик VRAM " + page.shown(page.v(bridge.matchingResult,"vram_gb",null)," ГБ"); color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
-                                Text { text: host.running() ? "Скорость предыдущих тестов — в истории исследований." : page.v(bridge.matchingResult,"id","") ? "Подробности теста — в истории." : "Эта конфигурация ещё не тестировалась."; color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                                Text { visible: !host.running() && !!page.v(bridge.matchingResult,"id",""); text: "6 ходов · история 4–24K · меньше секунд — лучше"; color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
+                                Text { text: host.running() ? "Предыдущие сценарии — в истории исследований." : page.v(bridge.matchingResult,"id","") ? "Подробности теста — в истории." : "Эта конфигурация ещё не тестировалась."; color: Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                             }
                         }
                     }
@@ -234,12 +234,16 @@ Item {
                         Text { text: "После запуска откройте нужный инструмент."; color: Theme.muted; font.pixelSize: 13 }
                         StudioButton { text: "Открыть чат"; iconName: "message"; Layout.fillWidth: true; enabled: host.running(); onClicked: host.navigate(1) }
                         Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
-                        Text { text: "OpenCode"; color: Theme.text; font.pixelSize: 17; font.bold: true }
+                        Text { text: "OpenCode · Web"; color: Theme.text; font.pixelSize: 17; font.bold: true }
                         RowLayout { Layout.fillWidth: true; spacing: 8
                             SearchSelect { Layout.fillWidth: true; entries: bridge.projects || []; selectedId: page.v(bridge.selectedProject,"id",""); placeholder: "Выберите проект"; iconName: "search"; onSelected: (id) => bridge.selectProject(id) }
                             StudioButton { text: "Выбрать папку…"; iconName: "folder"; onClicked: bridge.openProjectFolder() }
                         }
-                        StudioButton { text: "Открыть OpenCode"; iconName: "external-link"; Layout.fillWidth: true; enabled: host.running() && !!page.v(bridge.selectedProject,"id",""); onClicked: bridge.openOpenCode() }
+                        RowLayout { Layout.fillWidth: true
+                            StudioButton { text: "Открыть в браузере"; iconName: "external-link"; Layout.fillWidth: true; enabled: host.running() && !bridge.busy && !!page.v(bridge.selectedProject,"id",""); onClicked: bridge.openOpenCode() }
+                            StudioButton { text: "Остановить Web"; iconName: "x"; visible: !!page.v(bridge.openCode,"pid",0); enabled: !bridge.busy; onClicked: bridge.stopOpenCode() }
+                        }
+                        Text { visible: !!page.v(bridge.openCode,"pid",0); text: page.v(page.v(bridge.openCode,"browser",{}),"message",""); color: page.v(page.v(bridge.openCode,"browser",{}),"status","") === "ready" ? Theme.green : Theme.muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                     }
                 }
             }

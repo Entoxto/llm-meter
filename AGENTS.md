@@ -26,11 +26,14 @@ IMPLEMENTATION.md; не создавайте отсутствующие слои
 | Каталог, алиасы, runtime-профиль | `catalog.py`; корневые `inventory.py`, `model_aliases.py`, `runtime_profiles.py` | `test_studio_catalog.py`, `test_management.py` |
 | Пользовательское имя модели | `storage/store.py` (`rename_model`), `desktop/controllers.py` (`renameModel`), `desktop/qml/ModelsPage.qml` | `test_studio_catalog.py`, `test_studio_desktop.py` |
 | Доступность ручных параметров runtime | `backends/capabilities.py`, `desktop/controllers.py` (`_load` → `_profile`) | `test_studio_capabilities.py`, `test_studio_desktop.py`, `test_studio_session.py` |
-| MTP: обнаружение и отдельное дотестирование | `inventory.py` (NextN/tensors), `catalog.py`, `backends/capabilities.py`, `desktop/controllers.py`, `benchmarks/research.py` (`scope=mtp`) | `test_studio_mtp_inventory.py`, `test_studio_capabilities.py`, `test_studio_research.py`, `test_studio_desktop.py` |
+| MTP: обнаружение и варианты эксперимента | `inventory.py` (NextN/tensors), `catalog.py`, `backends/capabilities.py`, `desktop/controllers.py`, `benchmarks/experiment.py` | `test_studio_mtp_inventory.py`, `test_studio_capabilities.py`, `test_studio_research.py`, `test_studio_desktop.py` |
 | Чат, mmproj, картинки | `chat.py`, `attachments.py`, `backends/images.py`, `desktop/qml/ChatPage.qml` | `test_studio_chat.py`, `test_studio_attachments.py`, `test_studio_vision.py` |
-| Исследование, результаты, рекомендации | `benchmarks/research.py`, `recommendations.py`, `reports.py`; измерительный runner в корневом `engine.py` | `test_studio_research.py`, `test_studio_reports.py`, `test_engine.py`, `test_studio_vision.py` |
+| Конструктор эксперимента, план, отдельные доказательства | `benchmarks/experiment.py`; `desktop/experiments.py`; `desktop/qml/ResearchPage.qml` | `test_studio_experiment.py`, `test_studio_experiment_desktop.py` |
+| Исследование, результаты, рекомендации | `benchmarks/agent.py`, `research.py`, `recommendations.py`, `reports.py`; измерительный runner в корневом `engine.py` | `test_studio_agent.py`, `test_studio_research.py`, `test_studio_reports.py`, `test_engine.py`, `test_studio_vision.py` |
+| Полная история для рекомендаций и применение замера | `desktop/controllers.py` (`_load_recommendation_results`, `applyRecommendation`); общий обработчик `desktop/experiments.py` (`apply_saved_result`) | `test_studio_experiment_desktop.py`, `test_studio_desktop.py` |
 | БД, миграции, импорт, backup | `storage/store.py`, `platform/paths.py` | `test_studio_storage.py`, `test_studio_attachments.py` |
 | OpenCode, папка проекта и сохранение контекста Ollama | `integrations/opencode.py`, `session.py` (`prepare_external_client`), `backends/ollama.py`, [docs/OPENCODE.md](docs/OPENCODE.md) | `test_studio_opencode.py`, `test_studio_opencode_context.py` |
+| Штатный browser OpenCode | `integrations/browser_host.py`, `integrations/opencode_browser_policy.py`, `browser-host/src/`; официальный код в `browser-host/vendor/` | `test_studio_browser_host.py`, `test_studio_opencode.py`, opt-in browser integration |
 
 В таблице пути без `src/model_studio/` относятся к этому пакету, кроме явно
 отмеченных корневых файлов. `desktop/workers.py` выполняет задачи; Qt-мост
@@ -79,11 +82,21 @@ Python-линтера в проекте пока нет. Live OpenCode-пров�
 - Единственный `SessionController` владеет занятостью; чат, benchmark и
   исследование не выполняются одновременно. Исследование само запускает
   конфигурации и восстанавливает исходную сессию либо выгружает свою модель.
+- Черновик исследования независим от запуска. Preview и исполнение используют один
+  декартов план; подпись проверяется перед запуском. Скорость и длинный вход
+  имеют отдельные источники; проекция не меняет исходные записи и даты.
+  `scope=full/mtp` остаются для старых заданий.
 - QML не делает I/O. Блокирующая работа идёт через Workers; сервисы не импортируют Qt.
 - Не завершать внешние серверы. Windows-служебные subprocess должны работать
-  без консоли; интерактивное окно OpenCode открывается намеренно.
+  без консоли; OpenCode Web открывается в браузере. Browser host — отдельный
+  принадлежащий Studio процесс, подключённый к тому же приватному серверу.
+  Web UI не является browser host. Не выдавать browser-разрешение до attach;
+  пользовательский запрет имеет приоритет. Не подменять штатные browser tools.
 - Не смешивать запрос, фактический контекст, старый замер и текущую телеметрию.
   Рекомендации требуют проверенной идентичности модели/проектора и условий теста.
+  История для рекомендаций загружается отдельно от пагинации карточек. Применение
+  рекомендации и результата исследования использует один обработчик сохранённой
+  конфигурации, включая runtime-профиль; само по себе сервер не запускает.
 - SQLite использует короткие соединения. Картинки — файлы `attachments/`,
   сообщения содержат относительные ссылки; переносимая копия — `.studio-backup`.
 - Имена моделей, пути конкретного компьютера и бренд не определяют поведение.

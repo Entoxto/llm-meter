@@ -17,12 +17,13 @@ from math import isfinite
 
 from engine import PROMPT, without_generation_timeout
 from model_studio.configuration import LaunchConfig, effective_context_matches, projector_identity
+from .agent import METHOD, OUTPUT_TOKENS, TURNS, TARGET_TOKENS, workload, scenario_seconds
 
 
 _RUN_KEYS = ("index", "tokens", "output_tokens", "generation_seconds",
              "tokens_per_second", "prompt_tokens", "prompt_processed_tokens",
              "prompt_cached_tokens", "prompt_seconds", "ttft_seconds",
-             "wall_seconds", "draft_n", "draft_n_accepted")
+             "wall_seconds", "draft_n", "draft_n_accepted", "scenario_seconds", "turns")
 
 
 def _emit(emit, event: str, payload: dict) -> None:
@@ -32,11 +33,13 @@ def _emit(emit, event: str, payload: dict) -> None:
 
 def _validate_plan(config: LaunchConfig, plan: dict) -> tuple[list[int], int, int]:
     contexts = plan.get("contexts")
-    if not isinstance(contexts, list) or not contexts or any(type(c) is not int or c < 256 for c in contexts):
-        raise ValueError("plan.contexts must be a nonempty list of contexts >=256")
+    if not isinstance(contexts, list) or not contexts:
+        raise ValueError("Выберите хотя бы один контекст для исследования.")
+    if any(type(c) is not int or c < 256 for c in contexts):
+        raise ValueError("Размер контекста должен быть целым числом не меньше 256 токенов.")
     contexts = list(dict.fromkeys(contexts))
     max_configs = plan.get("max_configs", 12)
-    runs = plan.get("runs", 3)
+    runs = plan.get("runs", 1)
     target = plan.get("target_context", max(contexts))
     if type(max_configs) is not int or not 1 <= max_configs <= 12:
         raise ValueError("max_configs must be between 1 and 12")
@@ -65,6 +68,9 @@ def _validate_plan(config: LaunchConfig, plan: dict) -> tuple[list[int], int, in
 def plan_candidates(config, plan: dict) -> list[dict]:
     """Plan a small ordered sequence, never a context × feature product."""
     config = config if isinstance(config, LaunchConfig) else LaunchConfig.from_dict(config)
+    if plan.get("scope") == "experiment":
+        from .experiment import experiment_candidates
+        return experiment_candidates(config, plan)
     contexts, _, target = _validate_plan(config, plan)
     if plan.get("scope") == "mtp":
         return [{"key": f"mtp:{context}:{draft}", "stage": "acceleration",
@@ -320,6 +326,20 @@ def prepare_result(store, config, measured: dict, plan: dict | None = None, clie
             blocking_reasons.append("Нет корректных данных о времени генерации")
             break
     before = measured.get("models_before")
+    if method == METHOD:
+        if measured.get("workload") != workload(requested_runs) or scenario_seconds(measured) is None:
+            blocking_reasons.append("Не подтверждены методика или время агентского сценария")
+        for run in runs:
+            turns = run.get("turns") or []
+            if (len(turns) != TURNS or run.get("tokens") != OUTPUT_TOKENS
+                    or run.get("prompt_tokens") != TARGET_TOKENS
+                    or not isinstance(run.get("scenario_seconds"), (int, float))
+                    or not isfinite(run["scenario_seconds"]) or run["scenario_seconds"] <= 0
+                    or any(t.get("tokens") != OUTPUT_TOKENS // TURNS or
+                           t.get("prompt_tokens") != (i + 1) * TARGET_TOKENS // TURNS
+                           for i, t in enumerate(turns))):
+                blocking_reasons.append("Выполнен не весь фиксированный агентский сценарий")
+                break
     runtime_name = measured.get("runtime_model_id") or measured.get("model") or config.model
     digest = measured.get("digest")
     if isinstance(before, list) and any(
@@ -346,10 +366,11 @@ def prepare_result(store, config, measured: dict, plan: dict | None = None, clie
                                  "source": info.get("context_source")},
             "artifact": artifact, "environment": environment,
             "vision_available": vision_available,
-            "workload": {"method": method, "signature": signature,
+            "workload": measured.get("workload") if method == METHOD else {"method": method, "signature": signature,
                          "prompt_digest": hashlib.sha256(prompt.encode()).hexdigest(),
                          "runs_requested": requested_runs, "tokens_per_run": requested_tokens,
                          "options": options},
+            "scenario_token_digest": measured.get("scenario_token_digest"),
             "runs": runs, "summary": measured.get("summary"), "memory": memory,
             "gpu_summary": gpu_summary, "measured_gpu_summary": measured_gpu_summary,
             "gpu_summary_scope": measured.get("gpu_summary_scope"),
@@ -374,14 +395,15 @@ def _token_count(client, content: str, timeout: float) -> int | None:
     return count if type(count) is int and count >= 0 else None
 
 
-def _long_context_probe(client, model: str, context: int, stop: threading.Event) -> dict:
-    """Require tokenized long input, observed processing, output and exact context."""
+def _long_context_probe(client, model: str, context: int, stop: threading.Event,
+                        config: LaunchConfig | None = None) -> dict:
+    """Require long input, processing counters, output and a matching runtime context."""
     if getattr(client, "backend", None) != "llama.cpp":
         return {"validated": False, "reason": "Runtime tokenization proof unavailable"}
     reserve = min(128, max(16, context // 32))
     target = context - reserve - max(64, context // 100)
-    if target < 256 or target > 131072:
-        return {"validated": False, "reason": "Context outside bounded long-probe range"}
+    if target < 256:
+        return {"validated": False, "reason": "Context too small for long-input probe"}
     phrase = "Подробное техническое описание процессора, памяти и вычисления. "
     repeats = max(1, target // 15)
     try:
@@ -405,15 +427,19 @@ def _long_context_probe(client, model: str, context: int, stop: threading.Event)
         processed = measured.get("prompt_processed_tokens")
         cached = measured.get("prompt_cached_tokens")
         output = measured.get("output_tokens")
+        draft_n = measured.get("draft_n")
+        draft_n_accepted = measured.get("draft_n_accepted")
         actual = client.resident(model).get("context_length")
         accepted = processed + (cached or 0) if type(processed) is int else None
-        valid = (actual == context and type(reported) is int and type(accepted) is int
+        context_matches = effective_context_matches(config, actual) if config is not None else actual == context
+        valid = (context_matches and type(reported) is int and type(accepted) is int
                  and type(output) is int and output >= 8
                  and count <= reported <= context - reserve
                  and accepted >= count and reported + output <= context)
         return {"validated": bool(valid), "requested_context": context,
                 "tokenized_input": count, "accepted_tokens": accepted,
                 "reported_prompt_tokens": reported, "output_tokens": output,
+                "draft_n": draft_n, "draft_n_accepted": draft_n_accepted,
                 "observed_context": actual,
                 "reason": "Long input accepted without observed truncation" if valid
                           else "Runtime counters did not prove full long input"}
@@ -426,16 +452,12 @@ def _long_context_probe(client, model: str, context: int, stop: threading.Event)
 
 
 def _reusable_results(store, config: LaunchConfig, candidates: list[dict],
-                      artifact: dict, environment: dict, runs: int,
-                      needs_long: bool = False) -> dict[str, dict]:
+                     artifact: dict, environment: dict, runs: int,
+                     needs_long: bool = False, results: list[dict] | None = None) -> dict[str, dict]:
     """Select only complete snapshots from the same artifact, environment and workload."""
     if not environment.get("verified") or not artifact.get("identity_verified"):
         return {}
-    expected_prompt = hashlib.sha256(PROMPT.encode()).hexdigest()
-    expected_options = {"temperature": 0, "seed": 42}
-    expected_signature = hashlib.sha256(json.dumps({"method": "legacy-short-v2",
-        "prompt_digest": expected_prompt, "runs": runs, "tokens": 512,
-        "options": expected_options}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    expected_workload = workload(runs)
     wanted = {item["key"]: item["config"].to_dict() for item in candidates}
     def same_settings(observed: dict, expected: dict, effective: bool = False) -> bool:
         ignored = {"capabilities", "runtime_name"}
@@ -446,7 +468,7 @@ def _reusable_results(store, config: LaunchConfig, candidates: list[dict],
         return all(observed.get(field) == value for field, value in expected.items()
                    if field not in ignored)
     found = {}
-    for row in store.results(config.model_id):
+    for row in store.results(config.model_id) if results is None else results:
         if row.get("status") != "completed" or row.get("comparison_eligible") is not True \
                 or row.get("effective_config_verified") is not True:
             continue
@@ -460,18 +482,12 @@ def _reusable_results(store, config: LaunchConfig, candidates: list[dict],
                 for key in ("backend", "runtime_build", "hardware", "driver",
                             "projector_digest", "projector_size_bytes", "projector_mtime_ns")):
             continue
-        workload = row.get("workload") or {}
-        if (workload.get("method") != "legacy-short-v2"
-                or workload.get("signature") != expected_signature
-                or workload.get("prompt_digest") != expected_prompt
-                or workload.get("runs_requested") != runs
-                or workload.get("tokens_per_run") != 512
-                or workload.get("options") != expected_options):
+        if row.get("workload") != expected_workload or scenario_seconds(row) is None:
             continue
         measured_runs = row.get("runs") or []
         if (len(measured_runs) != runs or any(
                 not isinstance(run, dict) or not isinstance(run.get("tokens"), (int, float))
-                or run["tokens"] < 512
+                or run["tokens"] != OUTPUT_TOKENS or len(run.get("turns") or []) != TURNS
                 for run in measured_runs)):
             continue
         if needs_long:
@@ -497,13 +513,37 @@ def _reusable_results(store, config: LaunchConfig, candidates: list[dict],
     return found
 
 
+def restore_session(lease, initial: dict) -> str | None:
+    """Restore after research with a fresh cancellation token; unload on failure."""
+    try:
+        lease.begin_restoration()
+        if initial.get("status") == "ready" and initial.get("config"):
+            restored = lease.start(LaunchConfig.from_dict(initial["config"]))
+            if restored.get("status") != "ready":
+                raise RuntimeError("Original session was not restored")
+        else:
+            lease.unload()
+    except Exception as exc:
+        error = str(exc)
+        try:
+            lease.unload()
+        except Exception as cleanup_exc:
+            error += f"; cleanup: {cleanup_exc}"
+        return error
+    return None
+
+
 def run_research(session, store, config, plan: dict, emit=None,
                  cancel: threading.Event | None = None) -> dict:
     """Run a bounded baseline, feature, context and optional KV sequence."""
+    if plan.get("scope") == "experiment":
+        from .experiment import run_experiment
+        return run_experiment(session, store, config, plan, emit, cancel)
     config = config if isinstance(config, LaunchConfig) else LaunchConfig.from_dict(config)
     plan = dict(plan)
     plan.pop("budget_minutes", None)  # Old stopped jobs resume without their time limit.
     plan.setdefault("skip_existing", True)
+    plan["benchmark_method"] = METHOD
     contexts, runs, target = _validate_plan(config, plan)
     if config.context not in contexts:
         config = replace(config, context=min(contexts))
@@ -523,6 +563,8 @@ def run_research(session, store, config, plan: dict, emit=None,
         if job["status"] == "completed":
             raise ValueError("Completed research cannot be resumed")
         saved_plan = job["plan"]
+        if saved_plan.get("benchmark_method") != METHOD:
+            raise ValueError("Методика исследования изменилась; создайте новый план. Старые результаты сохранены.")
         if saved_plan.get("base_config") != config.to_dict():
             raise ValueError("Research config changed; start a new job")
         original_artifact = saved_plan.get("artifact") or {}
@@ -557,7 +599,7 @@ def run_research(session, store, config, plan: dict, emit=None,
                  if step.get("key") and step.get("status") == "completed"}
     speed_candidates = [step for step in completed.values() if step.get("stage") in ("baseline", "acceleration")
                         and step.get("comparison_eligible") and step.get("effective_config_verified")
-                        and isinstance(step.get("speed"), (int, float))]
+                        and isinstance(step.get("scenario_seconds"), (int, float))]
     long_proofs = {step.get("proof_key"): step.get("long_context") for step in completed.values()
                    if step.get("proof_key") and (step.get("long_context") or {}).get("validated") is True}
     attempted_keys: set[str] = set()
@@ -589,7 +631,7 @@ def run_research(session, store, config, plan: dict, emit=None,
                     break
                 candidate = descriptor["config"]
                 if stage in ("context", "kv") and speed_candidates:
-                    fastest = max(speed_candidates, key=lambda item: item["speed"])
+                    fastest = min(speed_candidates, key=lambda item: item["scenario_seconds"])
                     prior = LaunchConfig.from_dict(fastest["config"])
                     candidate = replace(candidate, mtp=prior.mtp, draft=prior.draft)
                 needs_long = (plan.get("scope") != "mtp" and
@@ -608,7 +650,7 @@ def run_research(session, store, config, plan: dict, emit=None,
                     step = {"key": key, "stage": stage, "context": candidate.context,
                             "config": candidate.to_dict(), "result_id": saved["id"],
                             "status": "completed", "reused": True,
-                            "speed": (saved.get("summary") or {}).get("median_tokens_per_second"),
+                            "scenario_seconds": scenario_seconds(saved),
                             "comparison_eligible": True, "effective_config_verified": True,
                             "proof_key": json.dumps(candidate.to_dict(), sort_keys=True),
                             "long_context": saved.get("long_context") or {"validated": False,
@@ -618,7 +660,7 @@ def run_research(session, store, config, plan: dict, emit=None,
                     completed[key] = step
                     if (step["long_context"] or {}).get("validated") is True:
                         long_proofs[step["proof_key"]] = step["long_context"]
-                    if stage in ("baseline", "acceleration") and isinstance(step["speed"], (int, float)):
+                    if stage in ("baseline", "acceleration") and isinstance(step["scenario_seconds"], (int, float)):
                         speed_candidates.append(step)
                     _emit(emit, "research_result", {"job_id": job["id"], "result": saved,
                                                        "reused": True})
@@ -642,23 +684,23 @@ def run_research(session, store, config, plan: dict, emit=None,
                         long_context = long_proofs[proof_key]
                     elif needs_long and not lease.cancel_event.is_set():
                         long_context = _long_context_probe(lease.client, lease.model_id,
-                                                           candidate.context, lease.cancel_event)
+                                                           candidate.context, lease.cancel_event, config=candidate)
                         if long_context.get("validated") is True:
                             long_proofs[proof_key] = long_context
                     else:
                         long_context = {"validated": False, "reason":
                                         "Long input was not verified for this MTP setting" if plan.get("scope") == "mtp"
                                         else "Long input is tested on context candidates"}
-                    measured = lease.benchmark(runs=runs, tokens=512)
+                    measured = lease.benchmark(runs=runs)
                     if measured is None:
                         raise RuntimeError("Benchmark returned no result")
                     result = prepare_result(store, candidate, measured, plan, lease.client)
                     result.update(research_id=job["id"], long_context=long_context)
                     saved = store.save_result(result)
-                    speed = (saved.get("summary") or {}).get("median_tokens_per_second")
+                    duration = scenario_seconds(saved)
                     step = {"key": key, "stage": stage, "context": candidate.context,
                             "config": candidate.to_dict(), "result_id": saved["id"],
-                            "status": saved["status"], "speed": speed,
+                            "status": saved["status"], "scenario_seconds": duration,
                             "comparison_eligible": saved["comparison_eligible"],
                             "effective_config_verified": saved["effective_config_verified"],
                             "proof_key": proof_key, "long_context": long_context}
@@ -722,22 +764,7 @@ def run_research(session, store, config, plan: dict, emit=None,
             # Restoration is a distinct phase after a cancelled request. The
             # session owner replaces its cancellation token under the lease.
             _emit(emit, "research_restoring", {"job_id": job["id"]})
-            try:
-                lease.begin_restoration()
-                if initial.get("status") == "ready" and initial.get("config"):
-                    restored = lease.start(LaunchConfig.from_dict(initial["config"]))
-                    if restored.get("status") != "ready":
-                        raise RuntimeError("Original session was not restored")
-                else:
-                    lease.unload()
-            except Exception as exc:
-                restore_error = str(exc)
-                try:
-                    # A second cancellation during restoration must not leave
-                    # an owned server active in an indeterminate state.
-                    lease.unload()
-                except Exception as cleanup_exc:
-                    restore_error += f"; cleanup: {cleanup_exc}"
+            restore_error = restore_session(lease, initial)
     except Exception as exc:
         job = store.update_research(job["id"], {"status": "stopped",
                                                 "stop_reason": "lease_or_storage_error", "error": str(exc)})

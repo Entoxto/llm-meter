@@ -121,7 +121,8 @@ class SessionTests(unittest.TestCase):
         result = self.session.chat([{"role": "user", "content": "hello"}])
         self.assertEqual(result["status"], "error")
         self.assertIn("truncated", result["metrics"]["error"])
-        report = self.session.benchmark(runs=2, tokens=8)
+        with patch("model_studio.session.run_agent_benchmark", return_value={"status": "completed", "runs": [{}, {}]}):
+            report = self.session.benchmark(runs=2)
         self.assertEqual(report["status"], "completed")
         self.assertEqual(len(report["runs"]), 2)
         self.assertEqual(report["config"]["context"], 4096)
@@ -133,7 +134,7 @@ class SessionTests(unittest.TestCase):
         def failing_measurement(*args, **kwargs):
             self.assertIsNone(client.stream_timeout)
             raise RuntimeError("measurement failed")
-        with patch("model_studio.session.run_benchmark", side_effect=failing_measurement):
+        with patch("model_studio.session.run_agent_benchmark", side_effect=failing_measurement):
             with self.assertRaisesRegex(RuntimeError, "measurement failed"):
                 self.session.benchmark()
         self.assertEqual(client.stream_timeout, 300)

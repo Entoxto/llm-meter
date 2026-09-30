@@ -73,7 +73,7 @@ class Studio(QObject):
             "draft": 2, "reasoning": "auto", "reasoning_budget": None, "kv_type": "f16", "gpu_layers": 99, "vision": False},
             session=self.core.snapshot, results=[], recommendations=[], telemetry={}, projects=[],
             selectedProject={}, conversations=[], messages=[], research={}, settings={},
-            selectedResult={}, matchingResult={}, researchJobs=[], researchResults=[], pendingImages=[], hasMoreResults=False,
+            selectedResult={}, matchingResult={}, researchJobs=[], researchResults=[], pendingImages=[], openCode={}, hasMoreResults=False,
             hasMoreConversations=False, busy=False, notice="", error="", page=0)
         self._pending = {}
         self._session_pending = False
@@ -89,8 +89,13 @@ class Studio(QObject):
         self._confirmed_operation = None
         self._environment = None
         self._environment_key = None
+        self._recommendation_model_id = None
+        self._recommendation_results = []
+        self._recommendation_revision = 0
         self._hash_attempted = set()
         self._last_telemetry = 0.0
+        from .experiments import ExperimentPresentation
+        self.experiments = ExperimentPresentation(self)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._pump)
         self._timer.start(40)
@@ -111,12 +116,18 @@ class Studio(QObject):
     selectedProject = _get("selectedProject", "QVariantMap")
     conversations = _get("conversations", "QVariantList")
     pendingImages = _get("pendingImages", "QVariantList")
+    openCode = _get("openCode", "QVariantMap")
     research = _get("research", "QVariantMap")
     settings = _get("settings", "QVariantMap")
     selectedResult = _get("selectedResult", "QVariantMap")
     matchingResult = _get("matchingResult", "QVariantMap")
     researchJobs = _get("researchJobs", "QVariantList")
     researchResults = _get("researchResults", "QVariantList")
+    researchDraft = _get("researchDraft", "QVariantMap")
+    researchPreview = _get("researchPreview", "QVariantMap")
+    experimentResults = _get("experimentResults", "QVariantList")
+    experimentJobs = _get("experimentJobs", "QVariantList")
+    experimentScope = _get("experimentScope", str)
     hasMoreResults = _get("hasMoreResults", bool)
     hasMoreConversations = _get("hasMoreConversations", bool)
     busy = _get("busy", bool)
@@ -188,6 +199,9 @@ class Studio(QObject):
                     self._values["busy"] = self._session_pending
                 if event == "failed":
                     self._values["error"] = data["message"]
+                    if data["name"] == "research" and self.researchDraft:
+                        self.experiments.invalidate()
+                        self._reload_history()
                     if data["name"] == "messages:" + str(self._conversation_revision):
                         self._loading_conversation = False
                 elif callback:
@@ -231,6 +245,8 @@ class Studio(QObject):
                 self._values["telemetry"] = self._telemetry_view(data)
             elif event == "research_started":
                 self._values["research"] = {**data, "status": "running", "phase": "Начало исследования", "completed": 0, "progress": 0, "results": []}
+                if data.get("scope") == "experiment":
+                    self._values["experimentScope"] = data["job_id"]
             elif event == "research_progress":
                 self._values["research"].update(data, status="running", phase="Используем сохранённый замер" if data.get("reused") else "Проверяем конфигурацию", completed=data.get("index", 1) - 1,
                     progress=(data.get("index", 1) - 1) / max(1, data.get("total", 1)))
@@ -240,6 +256,11 @@ class Studio(QObject):
                 self._values["research"].setdefault("results", []).append(result)
                 if not any(r["id"] == result["id"] for r in self._values["results"]):
                     self._values["results"].insert(0, result)
+            elif event == "research_check":
+                self._values["research"].update(config=data.get("config", {}),
+                    phase="Проверка длинного входа" if data.get("kind") == "long_context" else "Агентский сценарий")
+            elif event == "opencode_stopped":
+                self._values["openCode"] = {}
             elif event == "research_restoring":
                 self._values["research"].update(status="running", phase="Восстанавливаем исходную сессию")
             elif event == "research_finished":
@@ -253,6 +274,10 @@ class Studio(QObject):
                     self._values["error"] = "\n\n".join(errors)
             elif event == "progress":
                 self._values["notice"] = data.get("message") or ("Измерение: " + str(data.get("completed", 0)) + " / " + str(data.get("total", 0)))
+        open_code = opencode.status()
+        if open_code is not None and open_code != self._values["openCode"]:
+            self._values["openCode"] = open_code
+            dirty = True
         if dirty:
             self.changed.emit()
         if not self._closing and not self.busy and self.session.get("status") in SessionController.POLLABLE_STATUSES and time.monotonic() - self._last_telemetry > 2:
@@ -326,6 +351,8 @@ class Studio(QObject):
         if not self.selectedProject and self.projects:
             self._values["selectedProject"] = self.projects[0]
         self._values["notice"] = "; ".join(getattr(self.catalog, "errors", []) or [])
+        if self.page == 3:
+            self.experiments.ensure()
         self.changed.emit()
 
     def _reload_history(self):
@@ -345,14 +372,18 @@ class Studio(QObject):
             self._values.update(value)
             self._values.update(hasMoreResults=len(value["results"]) == 200, hasMoreConversations=len(value["conversations"]) == 200)
             self._refresh_recommendations()
+            self._load_recommendation_results()
+            if self.researchDraft:
+                self.experiments.load_results()
             self.changed.emit()
         self._submit("history", load, done)
 
-    def _profile(self, model):
+    def _profile(self, model, settings=None):
         from runtime_profiles import runtime_for
         if model.get("backend") != "gguf":
             return {}
-        profile = runtime_for(self.settings, model.get("path", ""), self.settings.get("server_exe", ""))
+        settings = self.settings if settings is None else settings
+        profile = runtime_for(settings, model.get("path", ""), settings.get("server_exe", ""))
         detected = self._values.get("runtimeCapabilities", {}).get(profile["executable"], [])
         profile["capabilities"] = list(dict.fromkeys([*profile.get("capabilities", []), *detected]))
         if "mtp" in profile["capabilities"]:
@@ -399,7 +430,10 @@ class Studio(QObject):
         self._values["selectedModel"] = model
         if changed:
             self._environment = None
+            self._recommendation_model_id = None
+            self._recommendation_results = []
         self._refresh_recommendations()
+        self._load_recommendation_results()
         self._capture_environment()
         if model and model.get("backend") == "gguf" and model.get("available") and not model.get("identity_verified") and model["id"] not in self._hash_attempted and not self.busy:
             self._hash_attempted.add(model["id"])
@@ -434,12 +468,12 @@ class Studio(QObject):
                 self._capture_environment()
         self._submit("environment", lambda: environment_snapshot(config), done)
 
-    def _config(self):
-        model = self.selectedModel
+    def _config(self, model=None, draft=None, profile=None):
+        model = self.selectedModel if model is None else model
         if not model or not model.get("available") or not model.get("testable", True):
             raise ValueError("Выберите установленную модель.")
-        draft = self.draft
-        profile = self._profile(model)
+        draft = self.draft if draft is None else draft
+        profile = self._profile(model) if profile is None else profile
         extra, _, _ = normalize_profile(profile)
         ollama = model["backend"] == "ollama"
         managed = model["backend"] == "gguf"
@@ -459,27 +493,46 @@ class Studio(QObject):
             kv_type=draft.get("kv_type", "f16") if managed else "f16",
             mmproj=model.get("mmproj_path", "") if managed and draft.get("vision") else "")
 
+    def _load_recommendation_results(self):
+        """Load all evidence for the selected model independently of UI pagination."""
+        self._recommendation_revision += 1
+        revision = self._recommendation_revision
+        model_id = self.selectedModel.get("id")
+        if not model_id:
+            return
+        def done(rows):
+            if revision != self._recommendation_revision or self.selectedModel.get("id") != model_id:
+                return
+            self._recommendation_model_id = model_id
+            self._recommendation_results = rows
+            self._refresh_recommendations()
+            self.changed.emit()
+        self._submit("recommendation_history:" + str(revision),
+                     lambda: self.store.results(model_id), done)
+
     def _refresh_recommendations(self):
         self._values["matchingResult"] = {}
         try:
             from model_studio.benchmarks.recommendations import recommendations
             config = self._config().to_dict()
             digest = self.selectedModel.get("digest") if self.selectedModel.get("identity_verified") else None
-            comparable = [r for r in self.results if digest and (r.get("artifact") or {}).get("digest") == digest]
-            unverified = [r for r in self.results if r.get("model_id") == config.get("model_id")
+            evidence = self._recommendation_results if self._recommendation_model_id == config.get("model_id") else self.results
+            comparable = [r for r in evidence if digest and (r.get("artifact") or {}).get("digest") == digest]
+            unverified = [r for r in evidence if r.get("model_id") == config.get("model_id")
                           and not (r.get("artifact") or {}).get("digest")]
             self._values["recommendations"] = recommendations([*comparable, *unverified], config, current_environment=self._environment)
             for result in comparable:
                 requested = result.get("config") or result.get("effective_config") or {}
                 environment = result.get("environment") or {}
                 if (result.get("model_id") == config.get("model_id") and result.get("effective_config_verified")
+                    and (result.get("workload") or {}).get("method") == "studio-agent-v1"
                     and result.get("comparison_eligible") and self._environment and self._environment.get("verified")
                     and all(environment.get(k) == self._environment.get(k) for k in ("backend", "runtime_build", "hardware", "driver"))
                     and (not config.get("mmproj") or (self._environment.get("projector_verified") and
                          (result.get("artifact", {}).get("projector") or {}).get("digest") == self._environment.get("projector_digest")))
                     and all(requested.get(k) == v for k, v in config.items() if k not in ("capabilities", "runtime_name"))
                     and result.get("status") == "completed"):
-                    self._values["matchingResult"] = result
+                    self._values["matchingResult"] = self._result_view(result)
                     break
         except (ImportError, ValueError, TypeError):
             self._values["recommendations"] = []
@@ -552,10 +605,15 @@ class Studio(QObject):
                 self.cancel()
                 if "unload" not in self._pending:
                     self._pending["unload"] = (None, True)
-                    self.workers.submit("unload", self.core.unload, session=True)
+                    self.workers.submit("unload", self._unload_session, session=True)
                 self._update(notice="Остановка операции и выгрузка модели…")
             return
-        self._submit("unload", self.core.unload, session=True)
+        self._submit("unload", self._unload_session, session=True)
+
+    def _unload_session(self):
+        opencode.stop_web()
+        self._session_event("opencode_stopped", {})
+        return self.core.unload()
 
     @Slot()
     def cancel(self):
@@ -657,7 +715,12 @@ class Studio(QObject):
             prepared["model_name"] = snapshot.get("model_name")
             return opencode.launch(project, prepared, configured)
         self._submit("opencode", open_client,
-                     lambda _: self._update(notice="OpenCode открыт в выбранной папке."), session=True)
+                     lambda value: self._update(openCode=value, notice="OpenCode открыт в браузере для выбранной папки."), session=True)
+
+    @Slot()
+    def stopOpenCode(self):
+        self._submit("stop_opencode", opencode.stop_web,
+            lambda _: self._update(openCode={}, notice="Веб-сервер OpenCode остановлен. Модель продолжает работать."), session=True)
 
     @Slot()
     def newChat(self):
@@ -774,8 +837,8 @@ class Studio(QObject):
         result.update(context=config.get("context", result.get("requested_context", result.get("context"))),
             display_model_id=model.get("id"),
             model_name=model.get("name", Path(str(result.get("model") or "Модель")).name),
-            speed=summary.get("median_tokens_per_second"), ttft=summary.get("median_ttft_seconds"),
-            prompt_speed=summary.get("median_prompt_tokens_per_second"),
+            scenario_seconds=summary.get("median_scenario_seconds"),
+            benchmark_label="Агентский сценарий" if (result.get("workload") or {}).get("method") == "studio-agent-v1" else "Архивный замер",
             vram_gb=round(result["gpu_peak_bytes"] / 2**30, 1) if result.get("gpu_peak_bytes") is not None else None,
             model_vram_gb=round((result.get("memory") or {})["vram_bytes"] / 2**30, 1) if (result.get("memory") or {}).get("vram_bytes") is not None else None)
         try:
@@ -821,7 +884,8 @@ class Studio(QObject):
             config = self._config()
         except (ValueError, TypeError, ImportError) as exc:
             self._update(error=str(exc)); return
-        plan = dict(plan)
+        from .experiments import research_input
+        plan = dict(research_input(plan))
         maximum = int(plan.get("max_context", 131072))
         plan.setdefault("contexts", sorted({maximum, *(c for c in (32768, 65536, 98304, 102400, 131072) if c <= maximum)}))
         plan.setdefault("max_configs", 12 if plan.get("memory_economy") or plan.get("scope") == "mtp" else 8)
@@ -829,6 +893,12 @@ class Studio(QObject):
         plan.setdefault("skip_existing", True)
         plan.setdefault("acknowledged_external", plan.get("external_use_acknowledged", False))
         plan.update(identity_verified=self.selectedModel.get("identity_verified", False), artifact_digest=self.selectedModel.get("digest"))
+        try:
+            from model_studio.benchmarks.research import plan_candidates
+            plan_candidates(config, plan)
+        except (ValueError, TypeError) as exc:
+            self._update(error=str(exc))
+            return
         self._research_cancel = threading.Event()
         self._submit("research", lambda: run_research(self.core, self.store, config, plan, self._session_event, self._research_cancel),
             lambda r: (self._update(research=r), self._reload_history()), session=True)
@@ -840,14 +910,20 @@ class Studio(QObject):
             return
         def resume():
             self._research_cancel = threading.Event()
+            def done(result):
+                self._update(research=result, experimentScope=result["id"])
+                self._reload_history()
+                self.experiments.load_results()
+                if self.researchDraft:
+                    self.experiments.invalidate()
             self._submit("research", lambda: resume_research(self.core, self.store, job_id, self._session_event, self._research_cancel),
-                lambda r: (self._update(research=r), self._reload_history()), session=True)
+                done, session=True)
         self._confirmed_operation = resume
         self.confirmationRequested.emit("Завершите запросы OpenCode и других клиентов. Исследование будет переключать модель и настройки; затем восстановит исходную сессию. Продолжить?")
 
     @Slot(str)
     def selectResult(self, result_id):
-        self._update(selectedResult=next((r for r in [*self.researchResults, *self.results] if r["id"] == result_id), {}))
+        self._update(selectedResult=next((r for r in [*self.experimentResults, *self.researchResults, *self.results] if r["id"] == result_id), {}))
 
     @Slot(str)
     def showResearch(self, job_id):
@@ -878,13 +954,9 @@ class Studio(QObject):
         rec = next((r for r in self.recommendations if r.get("key") == key and r.get("available")), None)
         if not rec:
             return
-        result = next((r for r in self.results if r["id"] == rec["result_id"]), {})
-        config = result.get("config", {})
-        self._values["draft"].update({k: config[k] for k in self.draft if k in config})
-        self._values["draft"]["reasoning_budget"] = config.get("reasoning_budget")
-        self._values["draft"]["vision"] = bool(config.get("mmproj"))
-        self._refresh_recommendations()
-        self._update(selectedResult=result)
+        result = next((r for r in [*self._recommendation_results, *self.results]
+                       if r["id"] == rec["result_id"]), {})
+        self.experiments.apply_saved_result(result)
 
     @Slot(str)
     def copyText(self, text):
@@ -955,6 +1027,64 @@ class Studio(QObject):
     @Slot()
     def openReports(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.paths["reports"])))
+
+    @Slot()
+    def ensureResearchDraft(self):
+        self.experiments.ensure()
+
+    @Slot(str)
+    def selectResearchModel(self, model_id):
+        self.experiments.select_model(model_id)
+
+    @Slot(str, "QVariant")
+    def setResearchOption(self, key, value):
+        self.experiments.set_option(key, value)
+
+    @Slot()
+    def copyLaunchToResearch(self):
+        self.experiments.copy_launch()
+
+    @Slot()
+    def refreshResearchPreview(self):
+        self.experiments.invalidate()
+
+    @Slot()
+    def startExperiment(self):
+        self.experiments.start()
+
+    @Slot(str)
+    def setExperimentScope(self, scope):
+        self.experiments.set_scope(scope)
+
+    @Slot(str)
+    def applyExperimentResult(self, result_id):
+        self.experiments.apply_result(result_id)
+
+    @Slot()
+    def cloneExperiment(self):
+        self.experiments.clone()
+
+    @Slot()
+    def cancelResearch(self):
+        self.cancel()
+
+    @Slot(str)
+    def copyExperimentReport(self, scope):
+        snapshot = self.experiments.report_snapshot()
+        self._submit("experiment_report", lambda: self.experiments.report(scope, snapshot), self.copyText)
+
+    @Slot(str)
+    def exportExperimentReport(self, scope):
+        path, _ = QFileDialog.getSaveFileName(None, "Сохранить отчёт",
+            str(self.paths["reports"] / "исследование.md"), "Markdown (*.md);;Текст (*.txt)")
+        if not path:
+            return
+        snapshot = self.experiments.report_snapshot()
+        def write():
+            text = self.experiments.report(scope, snapshot)
+            Path(path).write_text(text, encoding="utf-8")
+            return path
+        self._submit("experiment_export", write, lambda p: self._update(notice="Отчёт сохранён: " + p))
 
     @Slot("QVariantMap")
     def saveSettings(self, values):
@@ -1043,5 +1173,5 @@ class Studio(QObject):
         self.cancel()
         self._closing = True
         self._pending["shutdown"] = (None, True)
-        self.workers.submit("shutdown", self.core.unload, session=True)
+        self.workers.submit("shutdown", self._unload_session, session=True)
         return False
