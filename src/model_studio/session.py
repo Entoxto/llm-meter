@@ -18,6 +18,7 @@ from model_studio.backends.images import image_mime
 from model_studio.backends.process import ManagedRuntime
 from model_studio.configuration import LaunchConfig
 from model_studio.domain import SessionBusy, SessionUnavailable, StreamChunk
+from model_studio.integrations.codex import publish_session
 
 
 class SessionController:
@@ -88,7 +89,13 @@ class SessionController:
         self.emit(event, envelope)
 
     def _state(self) -> None:
-        self._publish("session", self.snapshot)
+        with self._lock:
+            snapshot = self.snapshot
+            try:
+                publish_session(self.logs_dir, snapshot)
+            except OSError as exc:
+                self._publish("error", {"message": f"Codex connection export failed: {exc}"})
+            self._publish("session", snapshot)
 
     def _begin(self, busy: str = "idle", require_ready: bool = False):
         with self._lock:

@@ -120,3 +120,12 @@ Python-линтера в проекте пока нет. Live OpenCode-пров�
 `docs/design-v2/qa/` — намеренно сохранённые снимки; перед публикацией проверить
 их на личные данные. Не редактировать зависимости внутри `.venv` или сборку
 вместо исходников. Сторонние SVG-иконки имеют лицензию в `desktop/qml/icons/LICENSE`.
+
+## Контракт для внешнего переключателя Codex
+
+`src/model_studio/integrations/codex.py` атомарно публикует public active session
+в `logs/codex-session.json` из `SessionController._state`. Проверки: `test_studio_codex.py`
+и `test_studio_session.py`. Только whitelist connection/state fields: не экспортировать
+config, содержимое чатов, credentials или выбранный незапущенный черновик. Путь остаётся
+в logs_dir владельца; тесты используют TemporaryDirectory. Внешний switcher расположен
+в `E:\AI Projects\Конфиги`; live runtime он не запускает и не останавливает.
