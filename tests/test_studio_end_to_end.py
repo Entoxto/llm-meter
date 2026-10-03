@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from model_studio.configuration import LaunchConfig
 from model_studio.session import SessionController
+from model_studio.chat import ChatService
+from model_studio.storage import Store
 
 
 class FakeServer:
@@ -25,6 +27,8 @@ class FakeServer:
         self.loaded = False
         self.allow_preload = True
         self.request_keep_alive = []
+        self.chat_mode = None
+        self.chat_requests = []
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -93,9 +97,22 @@ class FakeServer:
                         pass
                     return
                 if self.path == "/v1/chat/completions":
+                    owner.chat_requests.append(payload)
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.end_headers()
+                    if owner.chat_mode == "thinking":
+                        budget = payload["max_tokens"]
+                        completed = budget > 3072
+                        parts = [{"choices": [{"delta": {"reasoning_content": "thought " * min(budget, 3072)}}]}]
+                        if completed:
+                            parts.append({"choices": [{"delta": {"content": "Visible answer"}}]})
+                        parts.append({"choices": [{"delta": {}, "finish_reason": "stop" if completed else "length"}],
+                                      "usage": {"prompt_tokens": 100, "completion_tokens": 3073 if completed else budget}})
+                        for part in parts:
+                            self.wfile.write(("data: " + json.dumps(part) + "\n\n").encode())
+                        self.wfile.write(b"data: [DONE]\n\n")
+                        return
                     self.wfile.write(b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n')
                     return  # Deliberately missing data: [DONE]
                 self.send_error(404)
@@ -194,6 +211,27 @@ class RealTransportTests(unittest.TestCase):
         self.assertIn("[DONE]", result["metrics"]["error"])
         self.assertEqual(session.refresh_status()["status"], "ready")
         session.unload()
+
+    def test_thinking_chat_gets_visible_answer_after_old_2048_limit(self):
+        server = FakeServer("llama.cpp")
+        server.chat_mode = "thinking"
+        self.addCleanup(server.close)
+        session = SessionController(self.temp.name, lambda *_: None)
+        self.addCleanup(session.unload)
+        session.start(LaunchConfig(model="demo", managed=False, host=server.host, context=4096))
+        store = Store(Path(self.temp.name) / "chat.db")
+        service = ChatService(store, session, lambda *_: None)
+        limited = service.send(None, "Hello", max_tokens=2048)
+        self.assertEqual(limited["result"]["text"], "")
+        self.assertEqual(limited["result"]["metrics"]["done_reason"], "length")
+        completed = service.send(limited["conversation_id"], "Try again")
+        self.assertGreater(server.chat_requests[-1]["max_tokens"], 3072)
+        self.assertEqual(completed["result"]["text"], "Visible answer")
+        self.assertEqual(completed["result"]["metrics"]["done_reason"], "stop")
+        self.assertTrue(completed["result"]["reasoning"])
+        self.assertEqual([m["role"] for m in server.chat_requests[-1]["messages"]], ["user", "user"])
+        self.assertEqual(store.messages(limited["conversation_id"])[-1]["text"], "Visible answer")
+        self.assertEqual(session.client.stream_timeout, 300)
 
 
 if __name__ == "__main__":

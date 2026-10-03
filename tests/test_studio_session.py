@@ -95,6 +95,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result["reasoning"], "why")
         self.assertEqual(self.session.snapshot["busy"], "idle")
         self.assertIsNone(self.session.snapshot["operation_id"])
+        self.assertEqual(self.session.client.stream_timeout, 300)
         self.assertTrue(any(event == "text" and payload["text"] == "partial" for event, payload in self.events))
 
     def test_cancel_does_not_clear_during_request(self):
@@ -104,6 +105,7 @@ class SessionTests(unittest.TestCase):
             [{"role": "user", "content": "block"}])))
         worker.start()
         self.assertTrue(self.session.client.started.wait(1))
+        self.assertIsNone(self.session.client.stream_timeout)
         self.assertEqual(self.session.snapshot["busy"], "chat")
         with self.assertRaises(SessionBusy):
             self.session.benchmark(runs=1)
@@ -113,6 +115,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result[0]["status"], "cancelled")
         self.assertEqual(result[0]["text"], "partial")
         self.assertEqual(self.session.snapshot["status"], "ready")
+        self.assertEqual(self.session.client.stream_timeout, 300)
         self.assertFalse(self.session.cancel())
 
     def test_chat_error_and_benchmark_cleanup(self):
@@ -126,6 +129,20 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(report["status"], "completed")
         self.assertEqual(len(report["runs"]), 2)
         self.assertEqual(report["config"]["context"], 4096)
+        self.assertEqual(self.session.snapshot["busy"], "idle")
+
+    def test_chat_disables_deadline_and_restores_transport_after_error(self):
+        self.start()
+        client = self.session.client
+        def thinking_stream(*args):
+            self.assertIsNone(client.stream_timeout)
+            yield StreamChunk("reasoning", "thinking")
+            raise RuntimeError("stream failed")
+        with patch.object(client, "chat", side_effect=thinking_stream):
+            result = self.session.chat([{"role": "user", "content": "Hello"}], max_tokens=3500)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["reasoning"], "thinking")
+        self.assertEqual(client.stream_timeout, 300)
         self.assertEqual(self.session.snapshot["busy"], "idle")
 
     def test_benchmark_disables_generation_deadline_and_restores_it_on_error(self):

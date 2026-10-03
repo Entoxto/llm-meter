@@ -395,24 +395,25 @@ class SessionController:
         status = "complete"
         try:
             self._state()
-            stream = client.chat(model_id, messages, max_tokens, float(temperature), stop)
-            try:
-                for item in stream:
+            with without_generation_timeout(client):
+                stream = client.chat(model_id, messages, max_tokens, float(temperature), stop)
+                try:
+                    for item in stream:
+                        if stop.is_set():
+                            raise Cancelled()
+                        if isinstance(item, StreamChunk):
+                            (text_parts if item.kind == "text" else reasoning_parts).append(item.text)
+                            self._publish(item.kind, {"text": item.text})
+                            if on_chunk is not None:
+                                on_chunk(item)
+                        elif isinstance(item, dict):
+                            metrics.update(item)
                     if stop.is_set():
                         raise Cancelled()
-                    if isinstance(item, StreamChunk):
-                        (text_parts if item.kind == "text" else reasoning_parts).append(item.text)
-                        self._publish(item.kind, {"text": item.text})
-                        if on_chunk is not None:
-                            on_chunk(item)
-                    elif isinstance(item, dict):
-                        metrics.update(item)
-                if stop.is_set():
-                    raise Cancelled()
-            finally:
-                close = getattr(stream, "close", None)
-                if close:
-                    close()
+                finally:
+                    close = getattr(stream, "close", None)
+                    if close:
+                        close()
         except Cancelled:
             status = "cancelled"
         except Exception as exc:

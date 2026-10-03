@@ -9,7 +9,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from model_studio.chat import ChatPersistenceError, ChatService
+from model_studio.chat import ChatContextOverflow, ChatPersistenceError, ChatService
 from model_studio.attachments import AttachmentError, import_image
 from model_studio.domain import StreamChunk
 from model_studio.storage.store import Store
@@ -21,6 +21,7 @@ class FakeSession:
         self.snapshot = {"status": "ready", "context": 4096, "effective_context": 4096,
                          "session_id": "session-1", "config": {"model": "demo"}}
         self.requests = []
+        self.budgets = []
         self.cancelled = False
         self.mode = "complete"
 
@@ -30,6 +31,7 @@ class FakeSession:
 
     def chat(self, messages, max_tokens=2048, on_chunk=None):
         self.requests.append(messages)
+        self.budgets.append(max_tokens)
         chunks = [StreamChunk("text", "part")]
         if self.mode == "complete":
             chunks += [StreamChunk("reasoning", "thought"), StreamChunk("text", "ial")]
@@ -79,6 +81,47 @@ class ChatTests(unittest.TestCase):
         self.assertEqual([message["content"] for message in self.session.requests[1]],
                          ["First?", "partial", "Second?"])
         self.assertEqual(len([event for event, _ in self.events if event == "chat_started"]), 2)
+
+    def test_automatic_budget_follows_active_model_and_remaining_history(self):
+        first = self.service.send(None, "First?")
+        self.assertEqual(self.session.budgets[-1], 4096 - self.service._estimate(self.session.requests[-1]))
+        self.session.snapshot.update(context=32768, effective_context=32768,
+                                     config={"model": "thinking", "reasoning_budget": 4096})
+        second = self.service.send(first["conversation_id"], "Second?")
+        expected = 32768 - self.service._estimate(self.session.requests[-1])
+        self.assertEqual(self.session.budgets[-1], expected)
+        self.assertGreater(expected, 4096 + 2048)
+        meta = second["messages"][-1]["metadata"]
+        self.assertEqual(meta["requested_max_tokens"], expected)
+        self.assertEqual(meta["max_tokens_policy"], "remaining_context")
+        self.assertEqual(meta["config"]["model"], "thinking")
+
+    def test_automatic_budget_respects_effective_context_and_rejects_full_history(self):
+        self.session.snapshot.update(context=32768, effective_context=4096)
+        result = self.service.send(None, "Hello")
+        self.assertEqual(self.session.budgets[-1], 4096 - self.service._estimate(self.session.requests[-1]))
+        count = len(result["messages"])
+        with self.assertRaises(ChatContextOverflow):
+            self.service.send(result["conversation_id"], "x" * 4096)
+        self.assertEqual(len(self.store.messages(result["conversation_id"])), count)
+        self.assertEqual(len(self.session.requests), 1)
+
+    def test_explicit_budget_is_kept_and_validated(self):
+        result = self.service.send(None, "Hello", max_tokens=32)
+        self.assertEqual(self.session.budgets[-1], 32)
+        self.assertEqual(result["messages"][-1]["metadata"]["max_tokens_policy"], "explicit")
+        for value in (0, -1, True, 2.5, "32"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.service.send(None, "Hello", max_tokens=value)
+
+    def test_reasoning_only_attempt_is_saved_but_not_replayed(self):
+        conversation = self.store.create_conversation("Thinking")["id"]
+        self.store.save_message(conversation, "user", "First?")
+        self.store.save_message(conversation, "assistant", "", reasoning="unfinished thought",
+                                metadata={"done_reason": "length"})
+        result = self.service.send(conversation, "Next?")
+        self.assertEqual([m["content"] for m in self.session.requests[-1]], ["First?", "Next?"])
+        self.assertEqual(result["messages"][1]["reasoning"], "unfinished thought")
 
     def test_cancelled_partial_is_saved_and_excluded_from_next_prompt(self):
         self.session.mode = "cancelled"

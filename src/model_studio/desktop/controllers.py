@@ -769,12 +769,11 @@ class Studio(QObject):
         if self.session.get("status") != "ready":
             self._update(error="Сначала запустите модель на странице «Запуск»."); return
         conversation_id = self._conversation_id
-        max_tokens = min(2048, max(1, (self.session.get("context") or 32768) // 4))
         def done(value):
             self._conversation_id = value["conversation_id"]
             self._update(messages=value["messages"], pendingImages=[])
             self._reload_history()
-        self._submit("chat", lambda: self.chat_service.send(conversation_id, text, max_tokens, attachments=images), done, session=True)
+        self._submit("chat", lambda: self.chat_service.send(conversation_id, text, attachments=images), done, session=True)
 
     @Slot()
     def addChatImages(self):

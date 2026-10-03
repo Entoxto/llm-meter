@@ -13,9 +13,9 @@ Item {
     function displayText(m) {
         let t=v(m,"text",""); if (t) return t
         let meta=v(m,"metadata",{}), reason=String(v(meta,"finish_reason",v(meta,"done_reason",v(m,"finish_reason","")))).toLowerCase()
-        if (reason.indexOf("length")>=0 || reason.indexOf("limit")>=0 || reason.indexOf("token")>=0) return "Достигнут лимит ответа. Откройте рассуждение, если оно доступно, или отправьте новый запрос."
+        if (reason.indexOf("length")>=0 || reason.indexOf("limit")>=0 || reason.indexOf("token")>=0) return "Модель исчерпала доступный объём генерации до ответа. Сократите историю или задайте бюджет рассуждения в настройках запуска."
         let status=v(m,"status","")
-        if (status==="streaming") return "Модель отвечает…"
+        if (status==="streaming") return v(m,"reasoning","") ? "Модель рассуждает…" : "Модель отвечает…"
         if (status==="cancelled" || status==="interrupted") return "Ответ остановлен."
         return "Пустой ответ модели."
     }
@@ -81,7 +81,7 @@ Item {
                                 RowLayout { visible: !fromUser; Layout.fillWidth: true
                                     StudioButton { text: "Скопировать"; iconName: "copy"; subtle: true; buttonHeight: 22; enabled: !!page.v(modelData,"text",""); onClicked: bridge.copyText(page.v(modelData,"text","")) }
                                     Item { Layout.fillWidth: true }
-                                    Text { text: page.v(page.v(modelData,"metadata",{}),"tokens_per_second",null)!==null ? "Этот ответ: " + page.v(modelData.metadata,"tokens_per_second","") + " ток/с" : ""; color: Theme.muted; font.pixelSize: 12 }
+                                    Text { text: page.v(page.v(modelData,"metadata",{}),"tokens_per_second",null)!==null ? "Этот ответ: " + Number(page.v(modelData.metadata,"tokens_per_second",0)).toFixed(1) + " ток/с" : ""; color: Theme.muted; font.pixelSize: 12 }
                                 }
                             }
                         }

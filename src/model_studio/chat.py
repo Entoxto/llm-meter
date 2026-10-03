@@ -37,13 +37,13 @@ class ChatService:
         return 256 + sum(len(message["content"].encode("utf-8")) + 32
                          + 4096 * len(message.get("images") or []) for message in messages)
 
-    def send(self, conversation_id: str | None, text: str, max_tokens: int = 2048,
+    def send(self, conversation_id: str | None, text: str, max_tokens: int | None = None,
              attachments: list[dict] | None = None) -> dict:
         if not isinstance(text, str):
             raise ValueError("Message text must be a string.")
         if not text.strip() and not attachments:
             raise ValueError("Message text or an image is required.")
-        if type(max_tokens) is not int or max_tokens < 1:
+        if max_tokens is not None and (type(max_tokens) is not int or max_tokens < 1):
             raise ValueError("max_tokens must be positive.")
         if attachments is not None and (not isinstance(attachments, list)
                                         or len(attachments) > MAX_IMAGES):
@@ -63,6 +63,8 @@ class ChatService:
                     or message.get("status") != "complete"
                     or not isinstance(message.get("text"), str)):
                 continue
+            if message["role"] == "assistant" and not message["text"].strip():
+                continue  # A reasoning-only attempt is not an answer to replay.
             item = {"role": message["role"], "content": message["text"]}
             prior = (message.get("metadata") or {}).get("attachments") or []
             if prior:
@@ -86,6 +88,15 @@ class ChatService:
         if not limits:
             raise ChatContextOverflow("Context limit is unknown; select a verified session.")
         context = min(limits)
+        automatic_budget = max_tokens is None
+        if automatic_budget:
+            # Reasoning and visible text share the runtime's output budget.
+            # Reserve the complete prompt before giving generation the remainder.
+            max_tokens = context - estimate
+            if max_tokens < 1:
+                raise ChatContextOverflow(
+                    f"History may need about {estimate} input tokens; the session context is {context}. "
+                    "Start a new conversation or shorten the input.")
         if estimate + max_tokens > context:
             raise ChatContextOverflow(
                 f"History may need about {estimate} input tokens plus {max_tokens} output tokens; "
@@ -106,6 +117,7 @@ class ChatService:
                     "prompt_tokens_estimate": estimate,
                     "prompt_estimate_basis": "UTF-8 bytes + 32/message + 256 template reserve + 4096/image",
                     "requested_max_tokens": max_tokens,
+                    "max_tokens_policy": "remaining_context" if automatic_budget else "explicit",
                     "effective_context": effective_context}
         try:
             placeholder = self.store.save_message(conversation_id, "assistant", "", "streaming",

@@ -104,6 +104,14 @@ class StudioDesktopTests(unittest.TestCase):
             self.studio._pump()
         self.assertEqual(self.core.refresh_status.call_count, 3)
 
+    def test_send_message_leaves_output_budget_to_chat_service(self):
+        self.studio._values["session"] = {"status": "ready", "context": 32768,
+            "config": {"reasoning_budget": 4096}}
+        self.studio.chat_service.send.return_value = {"conversation_id": "chat", "messages": []}
+        self.studio.sendMessage("Hello")
+        self.workers.complete("chat")
+        self.studio.chat_service.send.assert_called_once_with(None, "Hello", attachments=[])
+
     def _model(self):
         row = self.store.upsert_model({"backend": "ollama", "locator": "host/tag",
                                        "host": "http://127.0.0.1:11434", "tag": "tag",
